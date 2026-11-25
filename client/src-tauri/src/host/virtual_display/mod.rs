@@ -371,6 +371,12 @@ pub fn cover_generation() -> u64 {
     curtain::cover_generation()
 }
 
+/// 补屏的虚拟显示器换过显示模式就加一（macOS）：在这之前打开的采集可能停在旧的缩放比例（如 1x），要重新打开
+#[cfg(target_os = "macos")]
+pub fn mode_generation() -> u64 {
+    mac::mode_generation()
+}
+
 /// 补屏的虚拟显示器在桌面上的名字（和 `DisplayInfo::name` 一样，例如 `DISPLAY19`）；没在补屏（没有它、开着防窥）时
 /// 为 `None`。本机的显示器回到桌面上之后它马上就要停用：会话不再跟着它（见 `host::session`）。要查显示设置，
 /// 放在不挡异步任务的线程上调用

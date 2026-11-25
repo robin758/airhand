@@ -141,6 +141,8 @@ pub struct SckCapturer {
     shows_cursor: bool,
     /// 打开时防窥的黑窗口是哪一版（见 [`virtual_display::cover_generation`]）：变了就重建采集器
     covers: u64,
+    /// 打开时补屏的虚拟显示器的模式是哪一版（见 [`virtual_display::mode_generation`]）：换过模式就重建采集器
+    vd_mode: u64,
 }
 
 fn frame_interval(fps: u8) -> CMTime {
@@ -166,6 +168,7 @@ impl SckCapturer {
         let locked = macos::screen_locked();
         // 先记下是哪一版再取窗口：取完之后又变了的话，下一帧就会发现
         let covers = virtual_display::cover_generation();
+        let vd_mode = virtual_display::mode_generation();
         let target = sck::shareable_display(display.id, &virtual_display::cover_windows())?;
         let (w, h) = crate::host::encoder::target_size(display.width, display.height, max_short);
         let config = unsafe {
@@ -236,6 +239,7 @@ impl SckCapturer {
             state_checked: Instant::now(),
             shows_cursor,
             covers,
+            vd_mode,
         })
     }
 
@@ -269,6 +273,10 @@ impl Capturer for SckCapturer {
         // 防窥的黑窗口变了：没去掉的那几个会把控制端的画面也盖黑
         if virtual_display::cover_generation() != self.covers {
             bail!("the privacy mode's black windows changed");
+        }
+        // 补屏的虚拟显示器刚换过模式：已打开的流可能还停在旧的缩放比例（如 1x），重新打开采集
+        if virtual_display::mode_generation() != self.vd_mode {
+            bail!("the virtual display's mode changed");
         }
         if self.layout_checked.elapsed() > LAYOUT_CHECK {
             self.layout_checked = Instant::now();

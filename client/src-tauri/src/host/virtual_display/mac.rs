@@ -53,6 +53,7 @@ use std::fmt;
 use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -142,6 +143,15 @@ pub(super) fn usable() -> bool {
 
 /// 现在的虚拟显示器：编号、像素大小
 static CURRENT: Mutex<Option<(CGDirectDisplayID, u32, u32)>> = Mutex::new(None);
+
+/// 补屏的虚拟显示器换过显示模式就加一：已打开的 ScreenCaptureKit 采集流可能还停在旧的缩放比例（如 1x），
+/// 见 `capture::sck`
+static MODE_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// 补屏的虚拟显示器换过显示模式的次数
+pub(super) fn mode_generation() -> u64 {
+    MODE_GEN.load(Ordering::Acquire)
+}
 
 /// 最近看到的本机主显示器的样子（见模块说明）：管理线程退出了也记着，合着盖子时再启动也照着它建
 static SEEN: Mutex<Option<Shape>> = Mutex::new(None);
@@ -502,8 +512,9 @@ fn follow_mode(vd: &VirtualDisplay) {
             "the virtual display keeps a mode it wasn't created with: capturing it as it is"
         );
     }
-    // 显示器列表里的像素大小照现在的；模式换了，会话重新列出显示器
+    // 显示器列表里的像素大小照现在的；模式换了，重开采集（ScreenCaptureKit 可能还停在 1x）并让会话重新列出显示器
     if set_pixels(vd.id, after.pixels) || before != after {
+        MODE_GEN.fetch_add(1, Ordering::AcqRel);
         bump();
     }
 }
