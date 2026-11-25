@@ -189,6 +189,16 @@
     <string name="reverse_wheel">反转鼠标滚轮</string>
     <string name="reverse_wheel_desc">外接鼠标的滚轮往反方向滚，屏幕上的双指滑动不变</string>
     <string name="wheel_speed">鼠标滚轮速度</string>
+    <string name="wheel_mode">鼠标滚轮模式</string>
+    <string name="wheel_mode_adaptive">自适应加速（推荐）</string>
+    <string name="wheel_mode_adaptive_desc">慢滚精细定位，连续快滚自动平滑加速</string>
+    <string name="wheel_mode_linear">固定线性</string>
+    <string name="wheel_mode_linear_desc">每格滚轮固定步进距离</string>
+    <string name="smooth_wheel">鼠标平滑滚动</string>
+    <string name="smooth_wheel_desc">将离散滚轮拆成平滑微步发送，控 Mac 时更接近触控板手感</string>
+    <string name="touch_scroll_speed">双指滑动速度</string>
+    <string name="touch_scroll_fling">双指滑动惯性</string>
+    <string name="touch_scroll_fling_desc">双指松手后继续惯性滚动；关闭则松手即停</string>
     <string name="settings_data">数据</string>
     <string name="clear_devices">清除已保存的设备</string>
     <string name="clear_devices_desc">共 %1$d 台</string>
@@ -261,6 +271,9 @@
     <string name="menu_mouse_lock_on">锁定鼠标：开</string>
     <string name="menu_mouse_lock_off">锁定鼠标：关</string>
     <string name="menu_quality">画质</string>
+    <string name="menu_scroll">滚动设置</string>
+    <string name="scroll_section_mouse">外接鼠标滚轮</string>
+    <string name="scroll_section_touch">屏幕双指滑动</string>
     <string name="menu_clipboard">剪贴板</string>
     <string name="menu_displays">显示器</string>
     <string name="menu_fit">适应屏幕</string>

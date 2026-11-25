@@ -5,6 +5,31 @@
 
 ---
 
+## `0.4.1-rc.5`（2026-11-25）
+
+### 新增功能与体验优化
+1. **Android 外接鼠标滚轮体验重构（不影响指针移动与连接流畅性）**
+   - **速度范围扩展**：由原来的 5 档（`50%–200%`）升级为连续滑块 **`10%–200%`**（步进 5%），远控 macOS 时可下调至 `20%–35%` 实现逐行精细滚动。
+   - **滚轮模式可选**：新增「**自适应加速（默认推荐）**」与「**固定线性**」。自适应模式下慢滚单格自动 `0.5×` 精细定位，连续快速拨动按角速度平滑加速至 `2.0×`，换方向瞬间归零不漂移。
+   - **平滑滚动开关**：可选开启 `SmoothWheel`（60fps 微步插值，首步立即发出零起手延迟、总增量严格守恒，静止即停定时器），控 Mac 时呈现接近触控板的顺滑手感。
+2. **Android 屏幕双指滑动密度归一化与独立调节**
+   - 修复原 `Gestures.kt` 按物理像素 `px` 乘以 3 导致高分屏（3x DPI 手机）双指滑动过快约 3 倍的问题，改为按屏幕密度 `dp` 归一化；惯性滚动阈值同样按 `dp/ms` 归一化并略收紧衰减。
+   - 新增独立的**双指滑动速度**滑块（`20%–200%`）与**双指滑动惯性**开关（关闭可松手即停）。
+3. **会话浮标菜单实时微调**
+   - 远程画面浮标主菜单新增「**滚动设置**」子页，无需断开连接即可边滚 Mac 页面边实时拖动滑块测试手感，设置自动持久化。
+
+### 改动位置
+- `android/app/src/main/java/app/airhand/android/data/Stores.kt`：新增 `WheelMode` 枚举、`smoothWheel`、`touchScrollSpeed`、`touchScrollFling`，放宽 `wheelSpeed` 范围至 `10..200`
+- `android/app/src/main/java/app/airhand/android/ui/session/RemoteView.kt`：`MouseWheel` 增加自适应加速曲线，新增 `SmoothWheel` 平滑插值器并对接 `Gestures` 密度与双指设置
+- `android/app/src/main/java/app/airhand/android/ui/session/Gestures.kt`：双指滑动与惯性按屏幕密度 `dp` 归一化，新增速度与惯性开关
+- `android/app/src/main/java/app/airhand/android/ui/session/PhoneSession.kt`：浮标菜单新增「滚动设置」实时调节子页
+- `android/app/src/main/java/app/airhand/android/ui/phone/SettingsTab.kt`：设置页升级滑块对话框并新增滚轮模式、平滑滚动、双指速度与惯性开关
+- `android/app/src/main/res/values/strings.xml`、`values-zh/strings.xml`：同步新增中英文文案
+- `android/app/src/test/java/app/airhand/android/{ui/session/MouseWheelTest.kt,ui/session/GesturesTest.kt,data/SettingsTest.kt}`：补充自适应加速、平滑滚轮、高分屏双指归一化与持久化单元测试
+- `.github/workflows/build-dmg-apk.yml`：默认版本号更新至 `0.4.1-rc.5`
+
+---
+
 ## `0.4.1-rc.4`（2026-11-25，提交 `462ef0f`）
 
 ### 新增功能

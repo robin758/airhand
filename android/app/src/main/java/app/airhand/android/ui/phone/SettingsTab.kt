@@ -2,6 +2,7 @@ package app.airhand.android.ui.phone
 
 import android.content.Intent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -47,6 +50,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -65,6 +69,7 @@ import app.airhand.android.core.Native
 import app.airhand.android.core.Preset
 import app.airhand.android.data.Settings
 import app.airhand.android.data.TouchMode
+import app.airhand.android.data.WheelMode
 import app.airhand.android.host.HostService
 import app.airhand.android.host.HostState
 import app.airhand.android.ui.ChoiceDialog
@@ -77,6 +82,7 @@ import app.airhand.android.ui.theme.Mono
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /** "设置"页。所有设置都保存在应用自己的数据目录里 */
 @Composable
@@ -160,6 +166,14 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
             app.updateSettings { it.copy(reverseWheel = v) }
         }
         Item(Icons.Outlined.Speed, stringResource(R.string.wheel_speed), stringResource(R.string.percent, s.wheelSpeed)) { dialog = "wheelSpeed" }
+        Item(Icons.Outlined.Mouse, stringResource(R.string.wheel_mode), wheelModeName(s.wheelMode)) { dialog = "wheelMode" }
+        Toggle(Icons.Outlined.Gesture, stringResource(R.string.smooth_wheel), stringResource(R.string.smooth_wheel_desc), s.smoothWheel) { v ->
+            app.updateSettings { it.copy(smoothWheel = v) }
+        }
+        Item(Icons.Outlined.TouchApp, stringResource(R.string.touch_scroll_speed), stringResource(R.string.percent, s.touchScrollSpeed)) { dialog = "touchScrollSpeed" }
+        Toggle(Icons.Outlined.Gesture, stringResource(R.string.touch_scroll_fling), stringResource(R.string.touch_scroll_fling_desc), s.touchScrollFling) { v ->
+            app.updateSettings { it.copy(touchScrollFling = v) }
+        }
 
         SectionTitle(stringResource(R.string.settings_data))
         Item(
@@ -293,15 +307,44 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
                 app.updateSettings { it.copy(touchMode = m) }
             },
         )
-        "wheelSpeed" -> ChoiceDialog(
+        "wheelSpeed" -> PercentSliderDialog(
             title = stringResource(R.string.wheel_speed),
-            options = Settings.WHEEL_SPEEDS,
-            selected = s.wheelSpeed,
-            label = { p -> Text(stringResource(R.string.percent, p)) },
+            initial = s.wheelSpeed,
+            min = Settings.WHEEL_SPEED_MIN,
+            max = Settings.WHEEL_SPEED_MAX,
+            step = Settings.WHEEL_SPEED_STEP,
             onDismiss = { dialog = null },
-            onSelect = { p ->
+            onSave = { p ->
                 dialog = null
                 app.updateSettings { it.copy(wheelSpeed = p) }
+            },
+        )
+        "wheelMode" -> ChoiceDialog(
+            title = stringResource(R.string.wheel_mode),
+            options = WheelMode.entries,
+            selected = s.wheelMode,
+            label = { m ->
+                Column {
+                    Text(wheelModeName(m))
+                    Text(wheelModeDesc(m), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            onDismiss = { dialog = null },
+            onSelect = { m ->
+                dialog = null
+                app.updateSettings { it.copy(wheelMode = m) }
+            },
+        )
+        "touchScrollSpeed" -> PercentSliderDialog(
+            title = stringResource(R.string.touch_scroll_speed),
+            initial = s.touchScrollSpeed,
+            min = Settings.TOUCH_SCROLL_MIN,
+            max = Settings.TOUCH_SCROLL_MAX,
+            step = Settings.TOUCH_SCROLL_STEP,
+            onDismiss = { dialog = null },
+            onSave = { p ->
+                dialog = null
+                app.updateSettings { it.copy(touchScrollSpeed = p) }
             },
         )
         "crashLog" -> CrashLogDialog(
@@ -474,3 +517,55 @@ fun touchModeDesc(m: TouchMode): String = stringResource(
         TouchMode.TOUCH -> R.string.mode_touch_desc
     },
 )
+
+@Composable
+fun wheelModeName(m: WheelMode): String = stringResource(
+    when (m) {
+        WheelMode.ADAPTIVE -> R.string.wheel_mode_adaptive
+        WheelMode.LINEAR -> R.string.wheel_mode_linear
+    },
+)
+
+@Composable
+fun wheelModeDesc(m: WheelMode): String = stringResource(
+    when (m) {
+        WheelMode.ADAPTIVE -> R.string.wheel_mode_adaptive_desc
+        WheelMode.LINEAR -> R.string.wheel_mode_linear_desc
+    },
+)
+
+@Composable
+private fun PercentSliderDialog(
+    title: String,
+    initial: Int,
+    min: Int,
+    max: Int,
+    step: Int,
+    onDismiss: () -> Unit,
+    onSave: (Int) -> Unit,
+) {
+    var value by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.percent, min), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.percent, value), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(stringResource(R.string.percent, max), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(4.dp))
+                Slider(
+                    value = value.toFloat(),
+                    onValueChange = { raw ->
+                        value = ((raw / step).roundToInt() * step).coerceIn(min, max)
+                    },
+                    valueRange = min.toFloat()..max.toFloat(),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(value) }) { Text(stringResource(R.string.save)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}

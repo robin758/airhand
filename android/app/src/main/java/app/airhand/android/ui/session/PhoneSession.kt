@@ -57,6 +57,7 @@ import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.StayCurrentLandscape
 import androidx.compose.material.icons.outlined.StayCurrentPortrait
+import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.automirrored.outlined.VolumeOff
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
@@ -72,6 +73,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -118,7 +120,9 @@ import app.airhand.android.core.Preset
 import app.airhand.android.core.PrivacyState
 import app.airhand.android.core.Stats
 import app.airhand.android.core.SystemAction
+import app.airhand.android.data.Settings
 import app.airhand.android.data.TouchMode
+import app.airhand.android.data.WheelMode
 import app.airhand.android.ui.ConfirmDialog
 import app.airhand.android.ui.Messages
 import app.airhand.android.ui.OsAvatar
@@ -145,7 +149,7 @@ private fun initialMode(setting: TouchMode, os: OsKind) = when (setting) {
     TouchMode.AUTO -> if (os == OsKind.ANDROID || os == OsKind.IOS) UiMode.TOUCH else UiMode.TRACKPAD
 }
 
-private enum class Page { MAIN, SHORTCUTS, DISPLAYS, QUALITY, CLIPBOARD, PRIVACY, GAME, HELP }
+private enum class Page { MAIN, SHORTCUTS, DISPLAYS, QUALITY, SCROLL, CLIPBOARD, PRIVACY, GAME, HELP }
 
 /**
  * 手机上的远程画面。
@@ -214,7 +218,12 @@ fun PhoneSession(
     LaunchedEffect(cursor) { view.setCursor(cursor) }
     LaunchedEffect(mouseLock) { view.mouseLock = mouseLock }
     LaunchedEffect(settings.localCursor) { view.localCursor = settings.localCursor }
-    LaunchedEffect(settings.reverseWheel, settings.wheelSpeed) { view.setWheel(settings.reverseWheel, settings.wheelSpeed) }
+    LaunchedEffect(settings.reverseWheel, settings.wheelSpeed, settings.wheelMode, settings.smoothWheel) {
+        view.setWheel(settings.reverseWheel, settings.wheelSpeed, settings.wheelMode, settings.smoothWheel)
+    }
+    LaunchedEffect(settings.touchScrollSpeed, settings.touchScrollFling) {
+        view.setTouchScroll(settings.touchScrollSpeed, settings.touchScrollFling)
+    }
     // 相对移动按对方屏幕的像素换算
     LaunchedEffect(displays, currentDisplay) {
         displays.firstOrNull { it.index == currentDisplay }?.let { view.setRemoteSize(it.width, it.height) }
@@ -402,6 +411,9 @@ fun PhoneSession(
                     }
                     Page.QUALITY -> SubPage(stringResource(R.string.menu_quality), { page = Page.MAIN }) {
                         Quality(session)
+                    }
+                    Page.SCROLL -> SubPage(stringResource(R.string.menu_scroll), { page = Page.MAIN }) {
+                        ScrollSettings(settings) { update -> app.updateSettings(update) }
                     }
                     Page.CLIPBOARD -> SubPage(stringResource(R.string.menu_clipboard), { page = Page.MAIN }) {
                         ClipboardActions(session) { menu = false }
@@ -692,6 +704,7 @@ private fun MainMenu(
             active = showStats,
             onClick = onToggleStats,
         )
+        Action(Icons.Outlined.SwapVert, stringResource(R.string.menu_scroll), cell) { onPage(Page.SCROLL) }
         Action(Icons.Outlined.ContentPaste, stringResource(R.string.menu_clipboard), cell) { onPage(Page.CLIPBOARD) }
         if (displays.size > 1) {
             Action(Icons.Outlined.Monitor, stringResource(R.string.menu_displays), cell) { onPage(Page.DISPLAYS) }
@@ -727,7 +740,7 @@ private fun MainMenu(
         Action(Icons.AutoMirrored.Outlined.HelpOutline, stringResource(R.string.menu_help), cell) { onPage(Page.HELP) }
         Action(Icons.Outlined.LinkOff, stringResource(R.string.disconnect), cell, danger = true, onClick = onDisconnect)
         // 补齐最后一行，保持格子宽度一致
-        val items = 11 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
+        val items = 12 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
         repeat((4 - items % 4) % 4) { Spacer(cell) }
     }
 }
@@ -968,6 +981,120 @@ private fun Quality(session: RemoteSession) {
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
         )
     }
+}
+
+/** 实时调节外接鼠标滚轮与双指触控滑动参数（边滚边试，自动保存到设置） */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ScrollSettings(settings: Settings, onUpdate: ((Settings) -> Settings) -> Unit) {
+    Text(
+        stringResource(R.string.scroll_section_mouse),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+    )
+    PercentSliderRow(
+        label = stringResource(R.string.wheel_speed),
+        value = settings.wheelSpeed,
+        min = Settings.WHEEL_SPEED_MIN,
+        max = Settings.WHEEL_SPEED_MAX,
+        step = Settings.WHEEL_SPEED_STEP,
+    ) { v -> onUpdate { it.copy(wheelSpeed = v) } }
+    Text(
+        stringResource(R.string.wheel_mode),
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 6.dp, bottom = 4.dp),
+    )
+    FlowRow(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        WheelMode.entries.forEach { m ->
+            FilterChip(
+                selected = settings.wheelMode == m,
+                onClick = { onUpdate { it.copy(wheelMode = m) } },
+                label = {
+                    Text(
+                        stringResource(
+                            if (m == WheelMode.ADAPTIVE) R.string.wheel_mode_adaptive else R.string.wheel_mode_linear,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+    Text(
+        stringResource(
+            if (settings.wheelMode == WheelMode.ADAPTIVE) R.string.wheel_mode_adaptive_desc else R.string.wheel_mode_linear_desc,
+        ),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
+    )
+    ScrollToggleRow(
+        title = stringResource(R.string.smooth_wheel),
+        desc = stringResource(R.string.smooth_wheel_desc),
+        checked = settings.smoothWheel,
+    ) { v -> onUpdate { it.copy(smoothWheel = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.reverse_wheel),
+        desc = stringResource(R.string.reverse_wheel_desc),
+        checked = settings.reverseWheel,
+    ) { v -> onUpdate { it.copy(reverseWheel = v) } }
+
+    HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+
+    Text(
+        stringResource(R.string.scroll_section_touch),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+    )
+    PercentSliderRow(
+        label = stringResource(R.string.touch_scroll_speed),
+        value = settings.touchScrollSpeed,
+        min = Settings.TOUCH_SCROLL_MIN,
+        max = Settings.TOUCH_SCROLL_MAX,
+        step = Settings.TOUCH_SCROLL_STEP,
+    ) { v -> onUpdate { it.copy(touchScrollSpeed = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.touch_scroll_fling),
+        desc = stringResource(R.string.touch_scroll_fling_desc),
+        checked = settings.touchScrollFling,
+    ) { v -> onUpdate { it.copy(touchScrollFling = v) } }
+}
+
+@Composable
+private fun PercentSliderRow(label: String, value: Int, min: Int, max: Int, step: Int, onChange: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                stringResource(R.string.percent, value),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { raw ->
+                val snapped = ((raw / step).roundToInt() * step).coerceIn(min, max)
+                if (snapped != value) onChange(snapped)
+            },
+            valueRange = min.toFloat()..max.toFloat(),
+        )
+    }
+}
+
+@Composable
+private fun ScrollToggleRow(title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(desc) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onChange(!checked) }
+            .padding(horizontal = 8.dp),
+    )
 }
 
 @Composable

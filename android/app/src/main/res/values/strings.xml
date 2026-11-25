@@ -194,6 +194,16 @@
     <string name="reverse_wheel">Reverse mouse wheel</string>
     <string name="reverse_wheel_desc">A connected mouse\'s wheel scrolls the other way. Two-finger scrolling on the screen doesn\'t change</string>
     <string name="wheel_speed">Mouse wheel speed</string>
+    <string name="wheel_mode">Mouse scroll mode</string>
+    <string name="wheel_mode_adaptive">Adaptive (recommended)</string>
+    <string name="wheel_mode_adaptive_desc">Precise on slow single notches, accelerates smoothly when spinning fast</string>
+    <string name="wheel_mode_linear">Linear</string>
+    <string name="wheel_mode_linear_desc">Fixed distance per notch</string>
+    <string name="smooth_wheel">Smooth mouse scrolling</string>
+    <string name="smooth_wheel_desc">Split discrete wheel clicks into smooth micro-steps (great for macOS)</string>
+    <string name="touch_scroll_speed">Two-finger scroll speed</string>
+    <string name="touch_scroll_fling">Two-finger scroll inertia</string>
+    <string name="touch_scroll_fling_desc">Keep gliding briefly after lifting two fingers; off stops immediately</string>
     <string name="percent" translatable="false">%1$d%%</string>
     <string name="settings_data">Data</string>
     <string name="clear_devices">Clear saved devices</string>
@@ -268,6 +278,9 @@
     <string name="menu_mouse_lock_on">Mouse lock on</string>
     <string name="menu_mouse_lock_off">Mouse lock off</string>
     <string name="menu_quality">Quality</string>
+    <string name="menu_scroll">Scrolling</string>
+    <string name="scroll_section_mouse">External mouse wheel</string>
+    <string name="scroll_section_touch">Two-finger touch scroll</string>
     <string name="menu_clipboard">Clipboard</string>
     <string name="menu_displays">Displays</string>
     <string name="menu_fit">Fit screen</string>

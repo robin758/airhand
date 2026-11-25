@@ -40,7 +40,12 @@ import kotlin.math.min
  * 快速点一下照样是左键；手指停着不动不算长按、慢慢松开也不算点击（转视角时拇指常常搭在屏幕上不动，
  * 不能因此开镜或者开枪）。被控端显示着光标时（游戏菜单）和平时一样操作
  */
-class Gestures(private val out: Out, private val timers: Timers, private val slop: Float) {
+class Gestures(
+    private val out: Out,
+    private val timers: Timers,
+    private val slop: Float,
+    private val density: Float = 1f,
+) {
 
     interface Out {
         /** 视图坐标 → 远端归一化坐标（0..1）；还没有画面时返回 null */
@@ -85,6 +90,16 @@ class Gestures(private val out: Out, private val timers: Timers, private val slo
 
     /** 转视角的灵敏度（见类的说明）；null 表示没开游戏按键 */
     var lookGain: Float? = null
+
+    /** 双指滑动速度百分比（20..200，默认 100；按屏幕密度 dp 归一化，高分屏不再过快） */
+    var touchScrollPercent = 100
+
+    /** 双指滑动松手后的惯性滚动开关 */
+    var touchScrollFling = true
+        set(v) {
+            field = v
+            if (!v) stopFling()
+        }
 
     /** 按着左键拖动着（触屏拖动、触控板的"点一下再按住拖动"） */
     val pressing: Boolean
@@ -376,9 +391,11 @@ class Gestures(private val out: Out, private val timers: Timers, private val slo
         val dt = max(1L, t - lastT)
         when (twoKind) {
             1 -> {
-                // 自然滚动：内容跟着手指走。手指往下 = 往上滚（滚轮为正）
-                wheelAccY += dy * WHEEL_PER_PX
-                wheelAccX -= dx * WHEEL_PER_PX
+                // 自然滚动：内容跟着手指走。手指往下 = 往上滚（滚轮为正）。
+                // 按屏幕密度（dp）归一化后再乘用户速度百分比，避免高分屏（3x DPI）下双指滑太快
+                val scale = wheelScale()
+                wheelAccY += dy * scale
+                wheelAccX -= dx * scale
                 flushWheel()
                 velX = 0.6f * velX + 0.4f * (dx / dt)
                 velY = 0.6f * velY + 0.4f * (dy / dt)
@@ -483,6 +500,7 @@ class Gestures(private val out: Out, private val timers: Timers, private val slo
     }
 
     fun cancel() {
+        stopFling()
         looking = false
         for (id in touchIds.keys.toList()) touchUp(P(id, touchPos[id]?.first ?: 0f, touchPos[id]?.second ?: 0f), CANCEL)
         timers.cancel(longTimer)
@@ -517,18 +535,23 @@ class Gestures(private val out: Out, private val timers: Timers, private val slo
 
     // ───────────── 惯性滚动 ─────────────
 
+    private fun wheelScale(): Float = WHEEL_PER_DP / density.coerceAtLeast(1f) * (touchScrollPercent / 100f)
+
     private fun startFling() {
-        if (hypot(velX, velY) < FLING_MIN) return
+        if (!touchScrollFling) return
+        val d = density.coerceAtLeast(1f)
+        if (hypot(velX, velY) / d < FLING_MIN_DP) return
         val tick = object : () -> Unit {
             override fun invoke() {
                 velX *= FLING_DECAY
                 velY *= FLING_DECAY
-                if (hypot(velX, velY) < FLING_STOP) {
+                if (!touchScrollFling || hypot(velX, velY) / d < FLING_STOP_DP) {
                     flingTimer = null
                     return
                 }
-                wheelAccY += velY * FRAME_MS * WHEEL_PER_PX
-                wheelAccX -= velX * FRAME_MS * WHEEL_PER_PX
+                val scale = wheelScale()
+                wheelAccY += velY * FRAME_MS * scale
+                wheelAccX -= velX * FRAME_MS * scale
                 flushWheel()
                 flingTimer = timers.after(FRAME_MS.toLong(), this)
             }
@@ -565,12 +588,12 @@ class Gestures(private val out: Out, private val timers: Timers, private val slo
         const val THREE_TAP_MS = 400L
         const val PASSTHROUGH_DELAY_MS = 60L
 
-        /** 双指滚动：每像素多少滚轮单位（120 = 一格，约 40 像素一格） */
-        const val WHEEL_PER_PX = 3f
+        /** 双指滚动：每 dp 多少滚轮单位（120 = 一格，约 40 dp ≈ 6mm 滑动一格，按屏幕密度归一化） */
+        const val WHEEL_PER_DP = 3f
         private const val FRAME_MS = 16f
-        private const val FLING_MIN = 0.6f
-        private const val FLING_STOP = 0.05f
-        private const val FLING_DECAY = 0.93f
+        private const val FLING_MIN_DP = 0.45f
+        private const val FLING_STOP_DP = 0.04f
+        private const val FLING_DECAY = 0.90f
 
         /** 指针加速：慢慢移动时精细（0.7×），快速划过时更远（最多 2.4×） */
         fun accel(pxPerMs: Float): Float = min(2.4f, max(0.7f, 0.7f + (pxPerMs - 0.2f) * 0.9f))

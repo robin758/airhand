@@ -57,6 +57,15 @@ enum class ScaleMode(val id: String) {
     }
 }
 
+/** 外接鼠标滚轮模式：自适应加速（慢滚精细、快滚加速，贴近 macOS 手感）/ 固定线性（每格等距步进） */
+enum class WheelMode(val id: String) {
+    ADAPTIVE("adaptive"), LINEAR("linear");
+
+    companion object {
+        fun of(id: String?) = entries.firstOrNull { it.id == id } ?: ADAPTIVE
+    }
+}
+
 data class Settings(
     /** 中转服务器 host:port */
     val server: String = BuildConfig.DEFAULT_SERVER,
@@ -89,8 +98,16 @@ data class Settings(
     val localCursor: Boolean = true,
     /** 外接鼠标的滚轮反过来滚（屏幕上的双指滑动不变） */
     val reverseWheel: Boolean = false,
-    /** 外接鼠标滚轮的速度：百分比，[WHEEL_SPEEDS] 里的一个 */
+    /** 外接鼠标滚轮的速度：百分比，[WHEEL_SPEED_MIN]..[WHEEL_SPEED_MAX] */
     val wheelSpeed: Int = 100,
+    /** 外接鼠标滚轮模式：自适应加速 / 固定线性 */
+    val wheelMode: WheelMode = WheelMode.ADAPTIVE,
+    /** 外接鼠标平滑滚动：把每格离散滚轮拆成 60fps 微步平滑发送（Mac 上体验更顺滑） */
+    val smoothWheel: Boolean = false,
+    /** 屏幕双指滑动速度：百分比，[TOUCH_SCROLL_MIN]..[TOUCH_SCROLL_MAX] */
+    val touchScrollSpeed: Int = 100,
+    /** 屏幕双指松手后的惯性滚动开关 */
+    val touchScrollFling: Boolean = true,
     /** 已经看过的手势说明（trackpad / touch / tv） */
     val tipsSeen: Set<String> = emptySet(),
     /**
@@ -123,11 +140,21 @@ data class Settings(
         .put("localCursor", localCursor)
         .put("reverseWheel", reverseWheel)
         .put("wheelSpeed", wheelSpeed)
+        .put("wheelMode", wheelMode.id)
+        .put("smoothWheel", smoothWheel)
+        .put("touchScrollSpeed", touchScrollSpeed)
+        .put("touchScrollFling", touchScrollFling)
         .put("tipsSeen", JSONArray(tipsSeen.toList()))
         .put("identity", identity)
 
     companion object {
-        val WHEEL_SPEEDS = listOf(50, 75, 100, 150, 200)
+        const val WHEEL_SPEED_MIN = 10
+        const val WHEEL_SPEED_MAX = 200
+        const val WHEEL_SPEED_STEP = 5
+        const val TOUCH_SCROLL_MIN = 20
+        const val TOUCH_SCROLL_MAX = 200
+        const val TOUCH_SCROLL_STEP = 5
+        val WHEEL_SPEEDS = listOf(15, 25, 35, 50, 75, 100, 150, 200)
 
         fun parse(o: JSONObject): Settings {
             val d = Settings()
@@ -148,7 +175,11 @@ data class Settings(
                 showStats = o.optBoolean("showStats", d.showStats),
                 localCursor = o.optBoolean("localCursor", d.localCursor),
                 reverseWheel = o.optBoolean("reverseWheel", d.reverseWheel),
-                wheelSpeed = o.optInt("wheelSpeed", d.wheelSpeed).takeIf { it in WHEEL_SPEEDS } ?: d.wheelSpeed,
+                wheelSpeed = o.optInt("wheelSpeed", d.wheelSpeed).takeIf { it in WHEEL_SPEED_MIN..WHEEL_SPEED_MAX } ?: d.wheelSpeed,
+                wheelMode = WheelMode.of(o.optStringOrNull("wheelMode")),
+                smoothWheel = o.optBoolean("smoothWheel", d.smoothWheel),
+                touchScrollSpeed = o.optInt("touchScrollSpeed", d.touchScrollSpeed).takeIf { it in TOUCH_SCROLL_MIN..TOUCH_SCROLL_MAX } ?: d.touchScrollSpeed,
+                touchScrollFling = o.optBoolean("touchScrollFling", d.touchScrollFling),
                 tipsSeen = if (tips == null) emptySet() else (0 until tips.length()).map { tips.getString(it) }.toSet(),
                 identity = o.optString("identity", ""),
             )

@@ -17,15 +17,27 @@ class SettingsTest {
         assertEquals(off, Settings.parse(off.toJson()))
     }
 
-    /** 外接鼠标滚轮：默认不反转、100%，改了记得住；不在可选范围里的速度当 100% */
+    /** 外接鼠标滚轮与双指滑动偏好：默认值、范围校验与持久化 */
     @Test
     fun wheelPreferences() {
         val old = Settings.parse(JSONObject())
         assertFalse(old.reverseWheel)
         assertEquals(100, old.wheelSpeed)
-        val custom = Settings(reverseWheel = true, wheelSpeed = 150)
+        assertEquals(WheelMode.ADAPTIVE, old.wheelMode)
+        assertFalse(old.smoothWheel)
+        assertEquals(100, old.touchScrollSpeed)
+        assertTrue(old.touchScrollFling)
+        val custom = Settings(
+            reverseWheel = true,
+            wheelSpeed = 25,
+            wheelMode = WheelMode.LINEAR,
+            smoothWheel = true,
+            touchScrollSpeed = 60,
+            touchScrollFling = false,
+        )
         assertEquals(custom, Settings.parse(custom.toJson()))
         assertEquals(100, Settings.parse(JSONObject().put("wheelSpeed", 0)).wheelSpeed)
+        assertEquals(100, Settings.parse(JSONObject().put("touchScrollSpeed", 5)).touchScrollSpeed)
     }
 
     /** 顶部状态信息浮窗：默认开启，关闭后记得住 */

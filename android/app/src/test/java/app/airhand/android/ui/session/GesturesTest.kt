@@ -192,6 +192,26 @@ class GesturesTest {
         assertTrue(buttons().isEmpty())
     }
 
+    /** 双指滑动按屏幕密度 dp 归一化，且受 touchScrollPercent 和惯性开关控制 */
+    @Test
+    fun twoFingerScrollRespectsDensitySpeedAndFlingToggle() {
+        val highDpi = Gestures(out, timers, slop = 10f, density = 3f)
+        highDpi.mode = Gestures.Mode.TRACKPAD
+        highDpi.touchScrollPercent = 50
+        highDpi.touchScrollFling = false
+        highDpi.down(p(100f, 100f), 0)
+        highDpi.pointerDown(p(200f, 100f, 1), listOf(p(100f, 100f), p(200f, 100f, 1)), 10)
+        highDpi.move(listOf(p(100f, 160f), p(200f, 160f, 1)), 30)
+        highDpi.pointerUp(p(0f, 0f, 1), 1, 40)
+        highDpi.up(p(100f, 160f), 50)
+        val beforeFling = log.filter { it.startsWith("wheel") }.sumOf { it.split(" ")[2].toInt() }
+        // 60px / density(3) * 3 * 50% = 30
+        assertEquals(30, beforeFling)
+        timers.advance(500L)
+        val afterFling = log.filter { it.startsWith("wheel") }.sumOf { it.split(" ")[2].toInt() }
+        assertEquals("fling disabled should stop immediately", beforeFling, afterFling)
+    }
+
     @Test
     fun pinchZoomsTheView() {
         g.mode = Gestures.Mode.TOUCH
