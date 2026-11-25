@@ -5,6 +5,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #include <stdio.h>
+#include <unistd.h>
 
 @interface CGVirtualDisplayDescriptor : NSObject
 @property(retain, nonatomic) dispatch_queue_t queue;
@@ -122,32 +123,83 @@ int ah_vd_mode(uint32_t display, uint32_t out[4]) {
     return 1;
 }
 
+static CGError apply_display_mode(uint32_t display, CGDisplayModeRef mode, CGConfigureOption option) {
+    CGDisplayConfigRef config;
+    CGError error = CGBeginDisplayConfiguration(&config);
+    if (error) return error;
+    error = CGConfigureDisplayWithDisplayMode(config, display, mode, NULL);
+    if (error) {
+        CGCancelDisplayConfiguration(config);
+        return error;
+    }
+    return CGCompleteDisplayConfiguration(config, option);
+}
+
+static BOOL mode_matches(CGDisplayModeRef mode, uint32_t width, uint32_t height,
+                         uint32_t pixel_width, uint32_t pixel_height) {
+    return mode &&
+           CGDisplayModeGetWidth(mode) == width &&
+           CGDisplayModeGetHeight(mode) == height &&
+           CGDisplayModeGetPixelWidth(mode) == pixel_width &&
+           CGDisplayModeGetPixelHeight(mode) == pixel_height;
+}
+
 // Switch `display` to its mode of `width` x `height` points and `pixel_width` x `pixel_height` pixels (the low
 // resolution twins of HiDPI modes included), remembered by macOS: the next time this display is in the same set of
 // displays, macOS picks this mode again. Returns a CGError, kCGErrorIllegalArgument if there's no such mode.
+//
+// On some macOS versions (e.g. macOS 15.6 clamshell unmirror with stale 1x1 UnmirrorInfo), WindowServer drops the
+// virtual display into mode 0 (e.g. 800x520 1x) while still treating its prior/desired mode as `wanted`. A direct
+// modeset to `wanted` then becomes a no-op ("desired mode change N -> N / No change between prior and requested
+// configuration"). When the direct switch leaves the display on a different mode, bounce through a different usable
+// mode (preferring the same point size so windows don't move) to force WindowServer to really apply `wanted`.
 int ah_vd_set_mode(uint32_t display, uint32_t width, uint32_t height, uint32_t pixel_width, uint32_t pixel_height) {
     @autoreleasepool {
         NSDictionary *options = @{(__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes : @YES};
         CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)options);
         if (!modes) return kCGErrorIllegalArgument;
+        CFIndex count = CFArrayGetCount(modes);
         CGDisplayModeRef wanted = NULL;
-        for (CFIndex i = 0; i < CFArrayGetCount(modes) && !wanted; i++) {
+        for (CFIndex i = 0; i < count && !wanted; i++) {
             CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-            if (CGDisplayModeGetWidth(mode) == width && CGDisplayModeGetHeight(mode) == height &&
-                CGDisplayModeGetPixelWidth(mode) == pixel_width && CGDisplayModeGetPixelHeight(mode) == pixel_height &&
+            if (mode_matches(mode, width, height, pixel_width, pixel_height) &&
                 CGDisplayModeIsUsableForDesktopGUI(mode))
                 wanted = mode;
         }
         CGError error = kCGErrorIllegalArgument;
         if (wanted) {
-            CGDisplayConfigRef config;
-            error = CGBeginDisplayConfiguration(&config);
+            error = apply_display_mode(display, wanted, kCGConfigurePermanently);
             if (!error) {
-                error = CGConfigureDisplayWithDisplayMode(config, display, wanted, NULL);
-                if (error)
-                    CGCancelDisplayConfiguration(config);
-                else
-                    error = CGCompleteDisplayConfiguration(config, kCGConfigurePermanently);
+                CGDisplayModeRef cur = CGDisplayCopyDisplayMode(display);
+                if (!mode_matches(cur, width, height, pixel_width, pixel_height)) {
+                    int32_t wanted_id = CGDisplayModeGetIODisplayModeID(wanted);
+                    int32_t cur_id = cur ? CGDisplayModeGetIODisplayModeID(cur) : -1;
+                    CGDisplayModeRef same_points = NULL;
+                    CGDisplayModeRef fallback = NULL;
+                    for (CFIndex i = 0; i < count; i++) {
+                        CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+                        if (!CGDisplayModeIsUsableForDesktopGUI(mode)) continue;
+                        int32_t mode_id = CGDisplayModeGetIODisplayModeID(mode);
+                        if (mode_id == wanted_id || (cur && mode_id == cur_id) ||
+                            mode_matches(mode, width, height, pixel_width, pixel_height))
+                            continue;
+                        if (!same_points && CGDisplayModeGetWidth(mode) == width &&
+                            CGDisplayModeGetHeight(mode) == height) {
+                            same_points = mode;
+                            break;
+                        }
+                        if (!fallback) fallback = mode;
+                    }
+                    CGDisplayModeRef detour = same_points ? same_points : fallback;
+                    if (detour) {
+                        error = apply_display_mode(display, detour, kCGConfigureForSession);
+                        if (!error) {
+                            usleep(50000);
+                            error = apply_display_mode(display, wanted, kCGConfigurePermanently);
+                        }
+                    }
+                }
+                if (cur) CGDisplayModeRelease(cur);
             }
         }
         CFRelease(modes);
