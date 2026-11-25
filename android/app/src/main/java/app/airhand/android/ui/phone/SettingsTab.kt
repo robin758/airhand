@@ -21,11 +21,13 @@ import androidx.compose.material.icons.outlined.Gesture
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Mouse
 import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.StayCurrentLandscape
 import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.TouchApp
@@ -150,26 +152,39 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
         Toggle(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.play_audio), stringResource(R.string.play_audio_desc), s.audio) { v ->
             app.updateSettings { it.copy(audio = v) }
         }
-        Toggle(Icons.Outlined.Sync, stringResource(R.string.av_sync), stringResource(R.string.av_sync_desc), s.avSync) { v ->
-            app.updateSettings { it.copy(avSync = v) }
+        Toggle(Icons.Outlined.Navigation, stringResource(R.string.nav_keys), stringResource(R.string.nav_keys_desc), s.navKeys) { v ->
+            app.updateSettings { it.copy(navKeys = v) }
         }
+
+        // 与远程画面浮标菜单「控制设置」保持完全一致的分组与顺序
+        SectionTitle(stringResource(R.string.settings_display_interaction))
         Toggle(Icons.Outlined.Speed, stringResource(R.string.show_stats), stringResource(R.string.show_stats_desc), s.showStats) { v ->
             app.updateSettings { it.copy(showStats = v) }
         }
-        Toggle(Icons.Outlined.Navigation, stringResource(R.string.nav_keys), stringResource(R.string.nav_keys_desc), s.navKeys) { v ->
-            app.updateSettings { it.copy(navKeys = v) }
+        Toggle(Icons.Outlined.StayCurrentLandscape, stringResource(R.string.auto_rotate), stringResource(R.string.auto_rotate_desc), s.autoRotate) { v ->
+            app.updateSettings { it.copy(autoRotate = v) }
+        }
+        Toggle(Icons.Outlined.Keyboard, stringResource(R.string.double_tap_keyboard), stringResource(R.string.double_tap_keyboard_desc), s.doubleTapKeyboard) { v ->
+            app.updateSettings { it.copy(doubleTapKeyboard = v) }
         }
         Toggle(Icons.Outlined.Mouse, stringResource(R.string.local_cursor), stringResource(R.string.local_cursor_desc), s.localCursor) { v ->
             app.updateSettings { it.copy(localCursor = v) }
         }
-        Toggle(Icons.Outlined.SwapVert, stringResource(R.string.reverse_wheel), stringResource(R.string.reverse_wheel_desc), s.reverseWheel) { v ->
-            app.updateSettings { it.copy(reverseWheel = v) }
+        Toggle(Icons.Outlined.Sync, stringResource(R.string.av_sync), stringResource(R.string.av_sync_desc), s.avSync) { v ->
+            app.updateSettings { it.copy(avSync = v) }
         }
+
+        SectionTitle(stringResource(R.string.scroll_section_mouse))
         Item(Icons.Outlined.Speed, stringResource(R.string.wheel_speed), stringResource(R.string.percent, s.wheelSpeed)) { dialog = "wheelSpeed" }
         Item(Icons.Outlined.Mouse, stringResource(R.string.wheel_mode), wheelModeName(s.wheelMode)) { dialog = "wheelMode" }
         Toggle(Icons.Outlined.Gesture, stringResource(R.string.smooth_wheel), stringResource(R.string.smooth_wheel_desc), s.smoothWheel) { v ->
             app.updateSettings { it.copy(smoothWheel = v) }
         }
+        Toggle(Icons.Outlined.SwapVert, stringResource(R.string.reverse_wheel), stringResource(R.string.reverse_wheel_desc), s.reverseWheel) { v ->
+            app.updateSettings { it.copy(reverseWheel = v) }
+        }
+
+        SectionTitle(stringResource(R.string.scroll_section_touch))
         Item(Icons.Outlined.TouchApp, stringResource(R.string.touch_scroll_speed), stringResource(R.string.percent, s.touchScrollSpeed)) { dialog = "touchScrollSpeed" }
         Toggle(Icons.Outlined.Gesture, stringResource(R.string.touch_scroll_fling), stringResource(R.string.touch_scroll_fling_desc), s.touchScrollFling) { v ->
             app.updateSettings { it.copy(touchScrollFling = v) }

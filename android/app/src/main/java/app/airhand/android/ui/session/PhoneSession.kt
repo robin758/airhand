@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.Mouse
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.RemoveModerator
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SportsEsports
@@ -87,6 +89,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -149,7 +152,7 @@ private fun initialMode(setting: TouchMode, os: OsKind) = when (setting) {
     TouchMode.AUTO -> if (os == OsKind.ANDROID || os == OsKind.IOS) UiMode.TOUCH else UiMode.TRACKPAD
 }
 
-private enum class Page { MAIN, SHORTCUTS, DISPLAYS, QUALITY, SCROLL, CLIPBOARD, PRIVACY, GAME, HELP }
+private enum class Page { MAIN, SHORTCUTS, DISPLAYS, QUALITY, CONTROLS, CLIPBOARD, PRIVACY, GAME, HELP }
 
 /**
  * 手机上的远程画面。
@@ -246,16 +249,21 @@ fun PhoneSession(
     BackHandler(enabled = !menu && editor == null) { confirmExit = true }
 
     val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
-    val keysBar = if (imeVisible) 44.dp else 0.dp
+    val keysBar = if (imeVisible) (if (landscape) 36.dp else 44.dp) else 0.dp
     val navActions = listOf(SystemAction.BACK, SystemAction.HOME, SystemAction.RECENTS).filter { it in actions }
     val navBar = if (navActions.isNotEmpty() && settings.navKeys && !imeVisible) 48.dp else 0.dp
+    // 弹出软键盘时不再压缩远程画面：把底部被键盘和快捷键栏占用的高度传给 RemoteView，
+    // 竖屏自然上移完整显示，横屏保持清晰比例并将光标所在区域平移到键盘正上方可视区
+    val density = LocalDensity.current
+    val imeInsetPx = if (imeVisible) with(density) { (imeBottom + keysBar).toPx() } else 0f
+    LaunchedEffect(imeInsetPx, landscape) { view.setKeyboardInset(imeInsetPx) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { view },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = imeBottom + keysBar + navBar),
+                .padding(bottom = navBar),
         )
 
         val covered = SessionStatus(session, big = false, onExit = onExit)
@@ -280,7 +288,8 @@ fun PhoneSession(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (settings.showStats && !covered) {
+                // 横屏弹键盘时顶部状态浮窗自动暂时隐藏，把有限的竖向空间全部留给输入框和画面
+                if (settings.showStats && !covered && !(imeVisible && landscape)) {
                     StatsHud(stats = stats, encoder = encoder, decoder = decoderStats, video = video)
                 }
                 messages.forEach { (key, text) ->
@@ -308,6 +317,7 @@ fun PhoneSession(
             KeysBar(
                 kb,
                 os,
+                compact = landscape,
                 onHide = { keyboardOpen.value = false },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -327,10 +337,12 @@ fun PhoneSession(
         if (!covered && editor == null) {
             MenuHandle(
                 bottomInset = imeBottom + keysBar + navBar,
+                doubleTapKeyboard = settings.doubleTapKeyboard,
                 onClick = {
                     page = Page.MAIN
                     menu = true
                 },
+                onDoubleTap = { keyboardOpen.value = !keyboardOpen.value },
             )
         }
 
@@ -373,8 +385,6 @@ fun PhoneSession(
                 when (page) {
                     Page.MAIN -> MainMenu(
                         session, view, name, os, mode, landscape, gameOn,
-                        showStats = settings.showStats,
-                        onToggleStats = { app.updateSettings { it.copy(showStats = !it.showStats) } },
                         onMode = { mode = it },
                         onRotate = {
                             menu = false
@@ -412,8 +422,8 @@ fun PhoneSession(
                     Page.QUALITY -> SubPage(stringResource(R.string.menu_quality), { page = Page.MAIN }) {
                         Quality(session)
                     }
-                    Page.SCROLL -> SubPage(stringResource(R.string.menu_scroll), { page = Page.MAIN }) {
-                        ScrollSettings(settings) { update -> app.updateSettings(update) }
+                    Page.CONTROLS -> SubPage(stringResource(R.string.menu_controls), { page = Page.MAIN }) {
+                        ControlSettings(session, settings) { update -> app.updateSettings(update) }
                     }
                     Page.CLIPBOARD -> SubPage(stringResource(R.string.menu_clipboard), { page = Page.MAIN }) {
                         ClipboardActions(session) { menu = false }
@@ -464,10 +474,17 @@ private const val PRIVACY_NOTICE = "privacy"
 
 // ───────────────────────────── 浮动圆钮 ─────────────────────────────
 
-/** 可以拖动的菜单圆钮，松手后贴到最近的左 / 右边缘 */
+/** 可以拖动的菜单圆钮，松手后贴到最近的左 / 右边缘；开启 [doubleTapKeyboard] 时双击直接开关键盘 */
 @Composable
-private fun MenuHandle(bottomInset: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
+private fun MenuHandle(
+    bottomInset: androidx.compose.ui.unit.Dp,
+    doubleTapKeyboard: Boolean,
+    onClick: () -> Unit,
+    onDoubleTap: () -> Unit,
+) {
     val density = LocalDensity.current
+    val currentClick by rememberUpdatedState(onClick)
+    val currentDoubleTap by rememberUpdatedState(onDoubleTap)
     var side by rememberSaveable { mutableFloatStateOf(1f) } // 0 左 1 右
     var fy by rememberSaveable { mutableFloatStateOf(0.35f) } // 纵向位置（比例）
     var drag by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -509,7 +526,18 @@ private fun MenuHandle(bottomInset: androidx.compose.ui.unit.Dp, onClick: () -> 
                         drag = (cx + amount.x).coerceIn(0f, wPx - sPx) to (cy + amount.y).coerceIn(0f, hPx - sPx)
                     }
                 }
-                .clickable(onClick = onClick),
+                .then(
+                    if (doubleTapKeyboard) {
+                        Modifier.pointerInput(true) {
+                            detectTapGestures(
+                                onTap = { currentClick() },
+                                onDoubleTap = { currentDoubleTap() },
+                            )
+                        }
+                    } else {
+                        Modifier.clickable(onClick = currentClick)
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(Brand.gradient), contentAlignment = Alignment.Center) {
@@ -616,8 +644,6 @@ private fun MainMenu(
     mode: UiMode,
     landscape: Boolean,
     gameOn: Boolean,
-    showStats: Boolean,
-    onToggleStats: () -> Unit,
     onMode: (UiMode) -> Unit,
     onRotate: () -> Unit,
     onKeyboard: () -> Unit,
@@ -630,7 +656,6 @@ private fun MainMenu(
     val encoder by session.encoder.collectAsState()
     val displays by session.displays.collectAsState()
     val audioOn by session.audioOn.collectAsState()
-    val avSyncOn by session.avSyncOn.collectAsState()
     val mouseLock by session.mouseLock.collectAsState()
     val hostOs by session.hostOs.collectAsState()
     val safety by session.safety.collectAsState()
@@ -693,18 +718,8 @@ private fun MainMenu(
         Action(if (audioOn) Icons.AutoMirrored.Outlined.VolumeUp else Icons.AutoMirrored.Outlined.VolumeOff, stringResource(if (audioOn) R.string.menu_sound_on else R.string.menu_sound_off), cell, active = audioOn) {
             session.setAudio(!audioOn)
         }
-        Action(Icons.Outlined.Sync, stringResource(if (avSyncOn) R.string.menu_av_sync_on else R.string.menu_av_sync_off), cell, active = avSyncOn, enabled = audioOn) {
-            session.setAvSync(!avSyncOn)
-        }
         Action(Icons.Outlined.HighQuality, stringResource(R.string.menu_quality), cell) { onPage(Page.QUALITY) }
-        Action(
-            Icons.Outlined.Speed,
-            stringResource(if (showStats) R.string.menu_stats_on else R.string.menu_stats_off),
-            cell,
-            active = showStats,
-            onClick = onToggleStats,
-        )
-        Action(Icons.Outlined.SwapVert, stringResource(R.string.menu_scroll), cell) { onPage(Page.SCROLL) }
+        Action(Icons.Outlined.Settings, stringResource(R.string.menu_controls), cell) { onPage(Page.CONTROLS) }
         Action(Icons.Outlined.ContentPaste, stringResource(R.string.menu_clipboard), cell) { onPage(Page.CLIPBOARD) }
         if (displays.size > 1) {
             Action(Icons.Outlined.Monitor, stringResource(R.string.menu_displays), cell) { onPage(Page.DISPLAYS) }
@@ -730,17 +745,17 @@ private fun MainMenu(
             view.fit()
             onClose()
         }
-        // 横屏 / 竖屏：显示现在的方向，点一下换到另一个
+        // 横屏 / 竖屏：显示目标方向，点击立即切换
         Action(
-            if (landscape) Icons.Outlined.StayCurrentLandscape else Icons.Outlined.StayCurrentPortrait,
-            stringResource(if (landscape) R.string.menu_landscape else R.string.menu_portrait),
+            if (landscape) Icons.Outlined.StayCurrentPortrait else Icons.Outlined.StayCurrentLandscape,
+            stringResource(if (landscape) R.string.menu_to_portrait else R.string.menu_to_landscape),
             cell,
             onClick = onRotate,
         )
         Action(Icons.AutoMirrored.Outlined.HelpOutline, stringResource(R.string.menu_help), cell) { onPage(Page.HELP) }
         Action(Icons.Outlined.LinkOff, stringResource(R.string.disconnect), cell, danger = true, onClick = onDisconnect)
         // 补齐最后一行，保持格子宽度一致
-        val items = 12 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
+        val items = 10 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
         repeat((4 - items % 4) % 4) { Spacer(cell) }
     }
 }
@@ -983,10 +998,48 @@ private fun Quality(session: RemoteSession) {
     }
 }
 
-/** 实时调节外接鼠标滚轮与双指触控滑动参数（边滚边试，自动保存到设置） */
+/** 实时控制设置页：分组、选项和顺序与首页「设置」完全一致，改动立即生效并自动保存 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScrollSettings(settings: Settings, onUpdate: ((Settings) -> Settings) -> Unit) {
+private fun ControlSettings(session: RemoteSession, settings: Settings, onUpdate: ((Settings) -> Settings) -> Unit) {
+    val audioOn by session.audioOn.collectAsState()
+    val avSyncOn by session.avSyncOn.collectAsState()
+
+    Text(
+        stringResource(R.string.settings_display_interaction),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+    )
+    ScrollToggleRow(
+        title = stringResource(R.string.show_stats),
+        desc = stringResource(R.string.show_stats_desc),
+        checked = settings.showStats,
+    ) { v -> onUpdate { it.copy(showStats = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.auto_rotate),
+        desc = stringResource(R.string.auto_rotate_desc),
+        checked = settings.autoRotate,
+    ) { v -> onUpdate { it.copy(autoRotate = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.double_tap_keyboard),
+        desc = stringResource(R.string.double_tap_keyboard_desc),
+        checked = settings.doubleTapKeyboard,
+    ) { v -> onUpdate { it.copy(doubleTapKeyboard = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.local_cursor),
+        desc = stringResource(R.string.local_cursor_desc),
+        checked = settings.localCursor,
+    ) { v -> onUpdate { it.copy(localCursor = v) } }
+    ScrollToggleRow(
+        title = stringResource(R.string.av_sync),
+        desc = stringResource(R.string.av_sync_desc),
+        checked = avSyncOn,
+        enabled = audioOn,
+    ) { v -> session.setAvSync(v) }
+
+    HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+
     Text(
         stringResource(R.string.scroll_section_mouse),
         style = MaterialTheme.typography.titleSmall,
@@ -1084,15 +1137,16 @@ private fun PercentSliderRow(label: String, value: Int, min: Int, max: Int, step
 }
 
 @Composable
-private fun ScrollToggleRow(title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ScrollToggleRow(title: String, desc: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     ListItem(
         headlineContent = { Text(title) },
         supportingContent = { Text(desc) },
-        trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = onChange, enabled = enabled) },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onChange(!checked) }
+            .alpha(if (enabled) 1f else 0.45f)
+            .clickable(enabled = enabled) { onChange(!checked) }
             .padding(horizontal = 8.dp),
     )
 }
@@ -1272,7 +1326,7 @@ private fun GestureTips(mode: Gestures.Mode, onDone: () -> Unit) {
 // ───────────────────────────── 键盘上方的特殊键 / 手机导航键 ─────────────────────────────
 
 @Composable
-private fun KeysBar(kb: KeyboardController, os: OsKind, onHide: () -> Unit, modifier: Modifier) {
+private fun KeysBar(kb: KeyboardController, os: OsKind, compact: Boolean = false, onHide: () -> Unit, modifier: Modifier) {
     val meta = if (os == OsKind.MAC) "⌘" else if (os == OsKind.ANDROID) "◯" else "Win"
     Row(
         modifier
@@ -1287,52 +1341,54 @@ private fun KeysBar(kb: KeyboardController, os: OsKind, onHide: () -> Unit, modi
                 .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Key("Esc") { kb.press("Escape") }
-            Key("Tab") { kb.press("Tab") }
-            ModKey("Ctrl", kb, KeyboardController.Mod.CTRL)
-            ModKey(if (os == OsKind.MAC) "⌥" else "Alt", kb, KeyboardController.Mod.ALT)
-            ModKey("⇧", kb, KeyboardController.Mod.SHIFT)
-            ModKey(meta, kb, KeyboardController.Mod.META)
-            Key("←") { kb.press("ArrowLeft") }
-            Key("↑") { kb.press("ArrowUp") }
-            Key("↓") { kb.press("ArrowDown") }
-            Key("→") { kb.press("ArrowRight") }
-            Key("Del") { kb.press("Delete") }
-            Key("Home") { kb.press("Home") }
-            Key("End") { kb.press("End") }
-            Key("PgUp") { kb.press("PageUp") }
-            Key("PgDn") { kb.press("PageDown") }
-            for (i in 1..12) Key("F$i") { kb.press("F$i") }
+            Key("Esc", compact) { kb.press("Escape") }
+            Key("Tab", compact) { kb.press("Tab") }
+            ModKey("Ctrl", kb, KeyboardController.Mod.CTRL, compact)
+            ModKey(if (os == OsKind.MAC) "⌥" else "Alt", kb, KeyboardController.Mod.ALT, compact)
+            ModKey("⇧", kb, KeyboardController.Mod.SHIFT, compact)
+            ModKey(meta, kb, KeyboardController.Mod.META, compact)
+            Key("←", compact) { kb.press("ArrowLeft") }
+            Key("↑", compact) { kb.press("ArrowUp") }
+            Key("↓", compact) { kb.press("ArrowDown") }
+            Key("→", compact) { kb.press("ArrowRight") }
+            Key("Del", compact) { kb.press("Delete") }
+            Key("Home", compact) { kb.press("Home") }
+            Key("End", compact) { kb.press("End") }
+            Key("PgUp", compact) { kb.press("PageUp") }
+            Key("PgDn", compact) { kb.press("PageDown") }
+            for (i in 1..12) Key("F$i", compact) { kb.press("F$i") }
         }
-        IconButton(onClick = onHide) { Icon(Icons.Outlined.KeyboardHide, stringResource(R.string.hide_keyboard), tint = Color.White) }
+        IconButton(onClick = onHide, modifier = Modifier.size(if (compact) 36.dp else 44.dp)) {
+            Icon(Icons.Outlined.KeyboardHide, stringResource(R.string.hide_keyboard), tint = Color.White)
+        }
     }
 }
 
 @Composable
-private fun Key(label: String, onClick: () -> Unit) {
+private fun Key(label: String, compact: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier
-            .padding(horizontal = 2.dp, vertical = 4.dp)
-            .widthIn(min = 44.dp)
-            .height(36.dp)
+            .padding(horizontal = 2.dp, vertical = if (compact) 3.dp else 4.dp)
+            .widthIn(min = if (compact) 40.dp else 44.dp)
+            .height(if (compact) 30.dp else 36.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF2C3244))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = if (compact) 8.dp else 10.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Color.White, fontSize = 14.sp)
+        Text(label, color = Color.White, fontSize = if (compact) 13.sp else 14.sp)
     }
 }
 
 @Composable
-private fun ModKey(label: String, kb: KeyboardController, m: KeyboardController.Mod) {
+private fun ModKey(label: String, kb: KeyboardController, m: KeyboardController.Mod, compact: Boolean = false) {
     val st = kb.state(m)
     Box(
         Modifier
-            .padding(horizontal = 2.dp, vertical = 4.dp)
-            .widthIn(min = 48.dp)
-            .height(36.dp)
+            .padding(horizontal = 2.dp, vertical = if (compact) 3.dp else 4.dp)
+            .widthIn(min = if (compact) 44.dp else 48.dp)
+            .height(if (compact) 30.dp else 36.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(
                 when (st) {
@@ -1343,10 +1399,10 @@ private fun ModKey(label: String, kb: KeyboardController, m: KeyboardController.
             )
             .then(if (st == KeyboardController.Sticky.LOCK) Modifier.border(2.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(8.dp)) else Modifier)
             .clickable { kb.toggle(m) }
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = if (compact) 8.dp else 10.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Color.White, fontSize = 14.sp, fontWeight = if (st != KeyboardController.Sticky.OFF) FontWeight.Bold else FontWeight.Normal)
+        Text(label, color = Color.White, fontSize = if (compact) 13.sp else 14.sp, fontWeight = if (st != KeyboardController.Sticky.OFF) FontWeight.Bold else FontWeight.Normal)
     }
 }
 

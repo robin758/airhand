@@ -5,7 +5,38 @@
 
 ---
 
-## `0.4.1-rc.5`（2026-11-25）
+## `0.4.1-rc.6`（2026-11-26）
+
+### 新增功能与体验优化
+1. **滚动速度进一步细腻化（适配小屏手机）**
+   - 将屏幕双指滑动基础灵敏度再减半（`WHEEL_PER_DP: 3.0 → 1.5`）；
+   - 外接鼠标滚轮与双指滑动速度滑块下限统一放宽至 **`5%`**（`5%–200%`，步进 5%），小屏上也可精细慢滚。
+2. **双击浮标直接开关键盘（可选开关）**
+   - 绕开安卓系统「三指截屏」手势冲突，新增「**双击浮标开关键盘**」开关（默认关闭；开启后快速双击悬浮圆钮直接呼出/收起键盘，单击仍开菜单，拖动不受影响）。
+3. **默认重力感应自动旋转 + 保留手动切换**
+   - 新增「**重力感应自动旋转**」（默认开启）：竖拿手机自动切竖屏、横拿自动切横屏；浮标菜单保留手动「切到竖屏 / 切到横屏」按钮（显示目标方向更直观）。
+4. **虚拟键盘弹出不再压扁画面（竖屏上移 / 横屏平移跟随光标）**
+   - 弹出键盘时不再把远程画面强行压缩进剩余狭缝：
+     - **竖屏**：Mac 画面完整保留原宽比例并自动居中在键盘正上方；
+     - **横屏**：保持画面原比例不缩小，自动将当前光标所在行平移到键盘正上方可视区（可继续拖动查看别处，收起键盘自动回位），并自动暂时隐藏顶部状态浮窗、将快捷键栏切换为紧凑高度（`36dp`）。
+5. **统一浮标菜单与首页设置的选项和默认状态**
+   - 将新增功能开关（顶部状态浮窗、双击浮标开关键盘、鼠标平滑滚动、反转鼠标滚轮、双指滑动惯性）统一调整为**默认关闭**（重力自动旋转按需默认开启）；
+   - 将首页「设置」与远程画面浮标菜单「**控制设置**」统一为完全一致的 3 组与排序：**显示与交互**、**外接鼠标滚轮**、**屏幕双指滑动**。
+
+### 改动位置
+- `android/app/src/main/java/app/airhand/android/data/Stores.kt`：新增 `autoRotate`、`doubleTapKeyboard`，将新增开关默认设为关闭，速度下限放宽至 `5%`
+- `android/app/src/main/java/app/airhand/android/ui/session/Gestures.kt`：`WHEEL_PER_DP` 调整为 `1.5f`，`touchScrollFling` 默认关闭
+- `android/app/src/main/java/app/airhand/android/ui/session/RemoteView.kt`：新增 `setKeyboardInset()` 与 `ensureCursorVisibleAboveKeyboard()`，弹出键盘时不压缩画面并平移跟随光标
+- `android/app/src/main/java/app/airhand/android/ui/session/SessionActivity.kt`、`AndroidManifest.xml`：支持重力感应自动旋转与手动切换同步
+- `android/app/src/main/java/app/airhand/android/ui/session/PhoneSession.kt`：接入非压缩键盘视口、紧凑 `KeysBar`、双击浮标开关键盘、统一「控制设置」子页与更直观的旋转按钮
+- `android/app/src/main/java/app/airhand/android/ui/phone/SettingsTab.kt`：按与浮标菜单完全一致的分组与顺序重排设置项
+- `android/app/src/main/res/values/strings.xml`、`values-zh/strings.xml`：同步新增中英文文案
+- `android/app/src/test/java/app/airhand/android/{data/SettingsTest.kt,ui/session/GesturesTest.kt}`：更新并补充单测
+- `.github/workflows/build-dmg-apk.yml`：默认版本号更新至 `0.4.1-rc.6`
+
+---
+
+## `0.4.1-rc.5`（2026-11-25，提交 `dc624a4`）
 
 ### 新增功能与体验优化
 1. **Android 外接鼠标滚轮体验重构（不影响指针移动与连接流畅性）**

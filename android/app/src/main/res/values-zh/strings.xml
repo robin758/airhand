@@ -182,6 +182,11 @@
     <string name="show_stats_desc">在远程画面顶部显示连接方式、编码、帧率、分辨率、码率、解码耗时和延迟</string>
     <string name="menu_stats_on">状态信息：开</string>
     <string name="menu_stats_off">状态信息：关</string>
+    <string name="settings_display_interaction">显示与交互</string>
+    <string name="auto_rotate">重力感应自动旋转</string>
+    <string name="auto_rotate_desc">自动跟随手机横竖屏方向，仍可在菜单中手动切换</string>
+    <string name="double_tap_keyboard">双击浮标开关键盘</string>
+    <string name="double_tap_keyboard_desc">快速双击悬浮圆钮直接呼出或收起键盘，单击仍打开菜单</string>
     <string name="nav_keys">控制手机时显示导航键</string>
     <string name="nav_keys_desc">在画面下方显示返回、主页、最近任务</string>
     <string name="local_cursor">拖动窗口时显示本地光标</string>
@@ -271,6 +276,7 @@
     <string name="menu_mouse_lock_on">锁定鼠标：开</string>
     <string name="menu_mouse_lock_off">锁定鼠标：关</string>
     <string name="menu_quality">画质</string>
+    <string name="menu_controls">控制设置</string>
     <string name="menu_scroll">滚动设置</string>
     <string name="scroll_section_mouse">外接鼠标滚轮</string>
     <string name="scroll_section_touch">屏幕双指滑动</string>
@@ -279,6 +285,8 @@
     <string name="menu_fit">适应屏幕</string>
     <string name="menu_landscape">横屏</string>
     <string name="menu_portrait">竖屏</string>
+    <string name="menu_to_landscape">切到横屏</string>
+    <string name="menu_to_portrait">切到竖屏</string>
     <string name="menu_help">手势说明</string>
     <string name="hide_keyboard">收起键盘</string>
     <string name="display_n">显示器 %1$d</string>

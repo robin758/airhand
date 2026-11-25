@@ -241,6 +241,44 @@ class RemoteView(context: Context, private val host: Host) : FrameLayout(context
             content.set((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
         }
         rel = 1f
+        clamp()
+        apply()
+    }
+
+    /** 底部被软键盘和快捷键栏占用的高度（像素）：不压缩画面，竖屏上移居中、横屏或放大时平移跟随光标 */
+    private var keyboardInset = 0f
+
+    private fun visibleHeight(): Float = (height - keyboardInset).coerceAtLeast(1f)
+
+    fun setKeyboardInset(insetPx: Float) {
+        val next = insetPx.coerceAtLeast(0f)
+        if (abs(next - keyboardInset) < 1f) return
+        val grew = next > keyboardInset
+        keyboardInset = next
+        if (width == 0 || height == 0 || content.width() <= 0f) return
+        if (grew && keyboardInset > 0f && content.height() > visibleHeight()) {
+            ensureCursorVisibleAboveKeyboard()
+        } else {
+            clamp()
+            apply()
+        }
+    }
+
+    /** 键盘盖住画面下半部分时，把当前光标位置平移到键盘正上方可视区（不缩小画面） */
+    private fun ensureCursorVisibleAboveKeyboard() {
+        val vh = visibleHeight()
+        if (content.height() <= vh) {
+            clamp()
+            apply()
+            return
+        }
+        val cy = content.top + gestures.cursorY * content.height()
+        val margin = min(24f * density, vh * 0.25f)
+        var dy = 0f
+        if (cy > vh - margin) dy = (vh - margin) - cy
+        else if (cy < margin) dy = margin - cy
+        if (dy != 0f) content.offset(0f, dy)
+        clamp()
         apply()
     }
 
@@ -300,35 +338,40 @@ class RemoteView(context: Context, private val host: Host) : FrameLayout(context
         apply()
     }
 
-    /** 画面比视图小的方向居中，比视图大的方向不留黑边 */
+    /** 画面比可视区域小的方向居中，比可视区域大的方向不留黑边（弹键盘时以键盘上方为底边） */
     private fun clamp() {
         val w = width.toFloat()
-        val h = height.toFloat()
+        val vh = visibleHeight()
         if (content.width() <= w) {
             content.offsetTo((w - content.width()) / 2, content.top)
         } else {
             if (content.left > 0) content.offset(-content.left, 0f)
             if (content.right < w) content.offset(w - content.right, 0f)
         }
-        if (content.height() <= h) {
-            content.offsetTo(content.left, (h - content.height()) / 2)
+        if (content.height() <= vh) {
+            content.offsetTo(content.left, (vh - content.height()) / 2)
         } else {
             if (content.top > 0) content.offset(0f, -content.top)
-            if (content.bottom < h) content.offset(0f, h - content.bottom)
+            if (content.bottom < vh) content.offset(0f, vh - content.bottom)
         }
     }
 
-    /** 触控板模式放大时：指针快到边上了就挪动画面 */
+    /** 触控板模式放大时，或弹键盘遮挡画面下半部分时：指针快到可视区边上就挪动画面 */
     private fun followCursor() {
-        if (!zoomed) return
+        val vh = visibleHeight()
+        if (!zoomed && !(keyboardInset > 0f && content.height() > vh)) return
         val cx = content.left + gestures.cursorX * content.width()
         val cy = content.top + gestures.cursorY * content.height()
         val mx = width * 0.15f
-        val my = height * 0.15f
+        val my = min(vh * 0.2f, 32f * density)
         var dx = 0f
         var dy = 0f
-        if (cx < mx) dx = mx - cx else if (cx > width - mx) dx = width - mx - cx
-        if (cy < my) dy = my - cy else if (cy > height - my) dy = height - my - cy
+        if (content.width() > width) {
+            if (cx < mx) dx = mx - cx else if (cx > width - mx) dx = width - mx - cx
+        }
+        if (content.height() > vh) {
+            if (cy < my) dy = my - cy else if (cy > vh - my) dy = vh - my - cy
+        }
         if (dx != 0f || dy != 0f) panBy(dx, dy)
     }
 

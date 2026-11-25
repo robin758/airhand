@@ -2,6 +2,7 @@ package app.airhand.android.ui.session
 
 import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
@@ -80,6 +81,8 @@ class SessionActivity : ComponentActivity(), RemoteView.Host {
     private val keyboardOpen = mutableStateOf(false)
     private val orientation = ScreenOrientation()
     private val landscape = mutableStateOf(true)
+    private var autoRotate = true
+    private var manualLandscape: Boolean? = null
 
     override val keyboard = KeyboardController(
         swapCtrlCommand = { session?.let { it.os == OsKind.MAC && it.swapCtrlCommand.value } == true },
@@ -112,14 +115,27 @@ class SessionActivity : ComponentActivity(), RemoteView.Host {
                 showCursor = false
             }
         }
-        // 横竖屏：对方的画面，还没收到画面时用对方当前显示器的尺寸。先按已经知道的定下来，进来时不用再转一次
-        if (!AirhandApp.isTv(this)) {
+        // 横竖屏：默认跟随手机重力感应自动旋转，也可在设置里关闭改为跟随对方画面方向，或菜单里手动切换；电视保持横屏
+        if (AirhandApp.isTv(this)) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            autoRotate = app.settings.value.autoRotate
+            landscape.value = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
             remoteSize(s.videoSize.value, s.displays.value, s.currentDisplay.value)?.let { (w, h) -> orientation.remote(w, h) }
             applyOrientation()
             lifecycleScope.launch {
+                app.settings.flow.collect { st ->
+                    if (autoRotate != st.autoRotate) {
+                        autoRotate = st.autoRotate
+                        manualLandscape = null
+                        applyOrientation()
+                    }
+                }
+            }
+            lifecycleScope.launch {
                 combine(s.videoSize, s.displays, s.currentDisplay, ::remoteSize).filterNotNull().collect { (w, h) ->
                     orientation.remote(w, h)
-                    applyOrientation()
+                    if (!autoRotate) applyOrientation()
                 }
             }
         }
@@ -143,17 +159,35 @@ class SessionActivity : ComponentActivity(), RemoteView.Host {
         video ?: displays.firstOrNull { it.index == current }?.let { it.width to it.height }
 
     private fun applyOrientation() {
-        landscape.value = orientation.landscape
-        requestedOrientation = if (orientation.landscape) {
+        val manual = manualLandscape
+        if (autoRotate && manual == null) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+            landscape.value = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            return
+        }
+        val wantLandscape = manual ?: orientation.landscape
+        landscape.value = wantLandscape
+        requestedOrientation = if (wantLandscape) {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         }
     }
 
-    /** 菜单里的"横屏 / 竖屏"：换到另一个方向 */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!AirhandApp.isTv(this)) {
+            landscape.value = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        }
+    }
+
+    /** 菜单里的“切到竖屏 / 切到横屏”：手动切到另一个方向 */
     private fun rotate() {
-        orientation.toggle()
+        if (autoRotate) {
+            manualLandscape = !landscape.value
+        } else {
+            orientation.toggle()
+        }
         applyOrientation()
     }
 

@@ -90,7 +90,11 @@ data class Settings(
     /** 控制手机时显示返回 / 主页 / 最近任务按钮 */
     val navKeys: Boolean = true,
     /** 远程画面顶部显示实时状态信息浮窗（连接、编码、帧率、分辨率、码率、解码耗时、延迟等） */
-    val showStats: Boolean = true,
+    val showStats: Boolean = false,
+    /** 跟随手机重力感应自动切换横竖屏（仍可在菜单里手动切换） */
+    val autoRotate: Boolean = true,
+    /** 双击悬浮圆钮直接呼出或收起虚拟键盘（单击仍打开菜单） */
+    val doubleTapKeyboard: Boolean = false,
     /**
      * 对方把光标画进了画面里时（拖动、缩放窗口等）也画本机的光标：跟手，只是和画面里的那个一起有两个。
      * 关掉时只看画面里的（见 [app.airhand.android.ui.session.RemoteView]）
@@ -107,7 +111,7 @@ data class Settings(
     /** 屏幕双指滑动速度：百分比，[TOUCH_SCROLL_MIN]..[TOUCH_SCROLL_MAX] */
     val touchScrollSpeed: Int = 100,
     /** 屏幕双指松手后的惯性滚动开关 */
-    val touchScrollFling: Boolean = true,
+    val touchScrollFling: Boolean = false,
     /** 已经看过的手势说明（trackpad / touch / tv） */
     val tipsSeen: Set<String> = emptySet(),
     /**
@@ -137,6 +141,8 @@ data class Settings(
         .put("tvScale", tvScale.id)
         .put("navKeys", navKeys)
         .put("showStats", showStats)
+        .put("autoRotate", autoRotate)
+        .put("doubleTapKeyboard", doubleTapKeyboard)
         .put("localCursor", localCursor)
         .put("reverseWheel", reverseWheel)
         .put("wheelSpeed", wheelSpeed)
@@ -148,13 +154,13 @@ data class Settings(
         .put("identity", identity)
 
     companion object {
-        const val WHEEL_SPEED_MIN = 10
+        const val WHEEL_SPEED_MIN = 5
         const val WHEEL_SPEED_MAX = 200
         const val WHEEL_SPEED_STEP = 5
-        const val TOUCH_SCROLL_MIN = 20
+        const val TOUCH_SCROLL_MIN = 5
         const val TOUCH_SCROLL_MAX = 200
         const val TOUCH_SCROLL_STEP = 5
-        val WHEEL_SPEEDS = listOf(15, 25, 35, 50, 75, 100, 150, 200)
+        val WHEEL_SPEEDS = listOf(5, 10, 15, 25, 35, 50, 75, 100, 150, 200)
 
         fun parse(o: JSONObject): Settings {
             val d = Settings()
@@ -173,6 +179,8 @@ data class Settings(
                 tvScale = ScaleMode.of(o.optStringOrNull("tvScale")),
                 navKeys = o.optBoolean("navKeys", d.navKeys),
                 showStats = o.optBoolean("showStats", d.showStats),
+                autoRotate = o.optBoolean("autoRotate", d.autoRotate),
+                doubleTapKeyboard = o.optBoolean("doubleTapKeyboard", d.doubleTapKeyboard),
                 localCursor = o.optBoolean("localCursor", d.localCursor),
                 reverseWheel = o.optBoolean("reverseWheel", d.reverseWheel),
                 wheelSpeed = o.optInt("wheelSpeed", d.wheelSpeed).takeIf { it in WHEEL_SPEED_MIN..WHEEL_SPEED_MAX } ?: d.wheelSpeed,

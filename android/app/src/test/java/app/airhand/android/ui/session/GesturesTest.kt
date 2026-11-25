@@ -205,8 +205,8 @@ class GesturesTest {
         highDpi.pointerUp(p(0f, 0f, 1), 1, 40)
         highDpi.up(p(100f, 160f), 50)
         val beforeFling = log.filter { it.startsWith("wheel") }.sumOf { it.split(" ")[2].toInt() }
-        // 60px / density(3) * 3 * 50% = 30
-        assertEquals(30, beforeFling)
+        // 60px / density(3) * 1.5 * 50% = 15
+        assertEquals(15, beforeFling)
         timers.advance(500L)
         val afterFling = log.filter { it.startsWith("wheel") }.sumOf { it.split(" ")[2].toInt() }
         assertEquals("fling disabled should stop immediately", beforeFling, afterFling)

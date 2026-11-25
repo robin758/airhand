@@ -91,11 +91,11 @@ class Gestures(
     /** 转视角的灵敏度（见类的说明）；null 表示没开游戏按键 */
     var lookGain: Float? = null
 
-    /** 双指滑动速度百分比（20..200，默认 100；按屏幕密度 dp 归一化，高分屏不再过快） */
+    /** 双指滑动速度百分比（5..200，默认 100；按屏幕密度 dp 归一化，高分小屏不再过快） */
     var touchScrollPercent = 100
 
     /** 双指滑动松手后的惯性滚动开关 */
-    var touchScrollFling = true
+    var touchScrollFling = false
         set(v) {
             field = v
             if (!v) stopFling()
@@ -588,8 +588,8 @@ class Gestures(
         const val THREE_TAP_MS = 400L
         const val PASSTHROUGH_DELAY_MS = 60L
 
-        /** 双指滚动：每 dp 多少滚轮单位（120 = 一格，约 40 dp ≈ 6mm 滑动一格，按屏幕密度归一化） */
-        const val WHEEL_PER_DP = 3f
+        /** 双指滚动：每 dp 多少滚轮单位（120 = 一格，约 80 dp 滑动一格，小屏手机下更精细跟手） */
+        const val WHEEL_PER_DP = 1.5f
         private const val FRAME_MS = 16f
         private const val FLING_MIN_DP = 0.45f
         private const val FLING_STOP_DP = 0.04f

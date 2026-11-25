@@ -26,27 +26,32 @@ class SettingsTest {
         assertEquals(WheelMode.ADAPTIVE, old.wheelMode)
         assertFalse(old.smoothWheel)
         assertEquals(100, old.touchScrollSpeed)
-        assertTrue(old.touchScrollFling)
+        assertFalse(old.touchScrollFling)
         val custom = Settings(
             reverseWheel = true,
-            wheelSpeed = 25,
+            wheelSpeed = 5,
             wheelMode = WheelMode.LINEAR,
             smoothWheel = true,
-            touchScrollSpeed = 60,
-            touchScrollFling = false,
+            touchScrollSpeed = 10,
+            touchScrollFling = true,
         )
         assertEquals(custom, Settings.parse(custom.toJson()))
         assertEquals(100, Settings.parse(JSONObject().put("wheelSpeed", 0)).wheelSpeed)
-        assertEquals(100, Settings.parse(JSONObject().put("touchScrollSpeed", 5)).touchScrollSpeed)
+        assertEquals(100, Settings.parse(JSONObject().put("touchScrollSpeed", 1)).touchScrollSpeed)
     }
 
-    /** 顶部状态信息浮窗：默认开启，关闭后记得住 */
+    /** 顶部状态浮窗、自动旋转与双击浮标开关键盘：默认值与持久化 */
     @Test
-    fun showStatsIsOnByDefaultAndRemembered() {
-        assertTrue(Settings().showStats)
-        assertTrue(Settings.parse(JSONObject()).showStats)
-        val off = Settings(showStats = false)
-        assertFalse(Settings.parse(off.toJson()).showStats)
-        assertEquals(off, Settings.parse(off.toJson()))
+    fun displayAndInteractionPreferences() {
+        val def = Settings()
+        assertFalse(def.showStats)
+        assertTrue(def.autoRotate)
+        assertFalse(def.doubleTapKeyboard)
+        val parsedEmpty = Settings.parse(JSONObject())
+        assertFalse(parsedEmpty.showStats)
+        assertTrue(parsedEmpty.autoRotate)
+        assertFalse(parsedEmpty.doubleTapKeyboard)
+        val custom = Settings(showStats = true, autoRotate = false, doubleTapKeyboard = true)
+        assertEquals(custom, Settings.parse(custom.toJson()))
     }
 }

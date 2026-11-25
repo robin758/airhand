@@ -187,6 +187,11 @@
     <string name="show_stats_desc">Show connection, codec, FPS, resolution, bitrate, decoder and latency at the top of the screen</string>
     <string name="menu_stats_on">Stats on</string>
     <string name="menu_stats_off">Stats off</string>
+    <string name="settings_display_interaction">Display &amp; interaction</string>
+    <string name="auto_rotate">Auto-rotate screen</string>
+    <string name="auto_rotate_desc">Follow your phone\'s physical orientation automatically; you can still rotate manually in the menu</string>
+    <string name="double_tap_keyboard">Double-tap menu button for keyboard</string>
+    <string name="double_tap_keyboard_desc">Double-tap the floating button to toggle the keyboard (single-tap still opens the menu)</string>
     <string name="nav_keys">Navigation keys for phones</string>
     <string name="nav_keys_desc">Back, Home and Recents below the screen when controlling a phone</string>
     <string name="local_cursor">Local cursor while dragging windows</string>
@@ -278,6 +283,7 @@
     <string name="menu_mouse_lock_on">Mouse lock on</string>
     <string name="menu_mouse_lock_off">Mouse lock off</string>
     <string name="menu_quality">Quality</string>
+    <string name="menu_controls">Controls</string>
     <string name="menu_scroll">Scrolling</string>
     <string name="scroll_section_mouse">External mouse wheel</string>
     <string name="scroll_section_touch">Two-finger touch scroll</string>
@@ -286,6 +292,8 @@
     <string name="menu_fit">Fit screen</string>
     <string name="menu_landscape">Landscape</string>
     <string name="menu_portrait">Portrait</string>
+    <string name="menu_to_landscape">To landscape</string>
+    <string name="menu_to_portrait">To portrait</string>
     <string name="menu_help">Gestures</string>
     <string name="hide_keyboard">Hide keyboard</string>
     <string name="display_n">Display %1$d</string>
