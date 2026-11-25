@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import app.airhand.android.core.Codec
+import app.airhand.android.core.DecoderStats
 import java.nio.ByteBuffer
 
 /** 一帧画面（`airhand_link` 的视频包去掉头），确认回调至多执行一次。 */
@@ -51,6 +52,7 @@ class VideoDecoder(
     private val requestKeyframe: () -> Unit,
     private val onError: (String) -> Unit = {},
     private val onTooLarge: (Codec, Int, Int) -> Unit = { _, _, _ -> },
+    private val onStats: (DecoderStats?) -> Unit = {},
 ) {
     private val thread = HandlerThread("airhand-decode").apply { start() }
     private val handler = Handler(thread.looper)
@@ -58,6 +60,8 @@ class VideoDecoder(
     private var surface: Surface? = null
     private var codec: MediaCodec? = null
     private var config: Triple<Codec, Int, Int>? = null
+    private var activeDecoder: Triple<Codec, String, Boolean>? = null
+    private var lastStatsReportMs = 0L
     private val pending = ArrayDeque<VideoPacket>()
     private val freeInputs = ArrayDeque<Int>()
     private var needKey = true
@@ -251,6 +255,10 @@ class VideoDecoder(
                 codec = mc
                 config = Triple(p.codec, p.width, p.height)
                 freeInputs.clear()
+                val hw = isHardwareName(mc.name)
+                activeDecoder = Triple(p.codec, mc.name, hw)
+                lastStatsReportMs = 0L
+                onStats(DecoderStats(p.codec, mc.name, hw, null))
                 Log.i(TAG, "decoder ${mc.name} started: ${p.codec.label} ${p.width}x${p.height}${if (f === lowLatency) " (low latency)" else ""}")
                 return true
             } catch (e: Exception) {
@@ -267,6 +275,10 @@ class VideoDecoder(
         pendingBytes = 0
         decoding.clear()
         decodeAvgNs = 0
+        val hadDecoder = activeDecoder != null
+        activeDecoder = null
+        lastStatsReportMs = 0L
+        if (hadDecoder) onStats(null)
         val mc = codec ?: return
         codec = null
         config = null
@@ -289,6 +301,13 @@ class VideoDecoder(
                 decoding.remove(info.presentationTimeUs)?.let { sent ->
                     val elapsed = (now - sent).coerceIn(0, 500_000_000)
                     decodeAvgNs = if (decodeAvgNs == 0L) elapsed else decodeAvgNs + (elapsed - decodeAvgNs) / 10
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (decodeAvgNs > 0L && nowMs - lastStatsReportMs >= STATS_INTERVAL_MS) {
+                        lastStatsReportMs = nowMs
+                        activeDecoder?.let { (c, n, hw) ->
+                            onStats(DecoderStats(c, n, hw, decodeAvgNs / 1_000_000f))
+                        }
+                    }
                 }
                 val render = info.size > 0 || (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) == 0
                 if (render && sync.enabled) codec.releaseOutputBuffer(index, sync.renderTimeNs(info.presentationTimeUs, now))
@@ -314,6 +333,7 @@ class VideoDecoder(
         private const val MAX_PENDING = 12
         private const val MAX_SYNC_PENDING = 120
         private const val MAX_PENDING_BYTES = 32 * 1024 * 1024
+        private const val STATS_INTERVAL_MS = 500L
 
         /** 从关键帧里取出参数集，作为 csd-0 / csd-1（有的解码器只认这种方式） */
         fun csd(p: VideoPacket): List<ByteArray> {
@@ -381,6 +401,10 @@ class VideoDecoder(
         fun isHardware(i: MediaCodecInfo): Boolean =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) i.isHardwareAccelerated
             else !i.name.startsWith("OMX.google.") && !i.name.startsWith("c2.android.")
+
+        fun isHardwareName(name: String): Boolean =
+            infos.firstOrNull { !it.isEncoder && it.name == name }?.let { isHardware(it) }
+                ?: (!name.startsWith("OMX.google.") && !name.startsWith("c2.android."))
     }
 }
 

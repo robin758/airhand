@@ -171,6 +171,16 @@ data class Stats(
     val width: Int,
     val height: Int,
     val direct: Boolean,
+    val jitterMs: Float = 0f,
+    val lossPct: Float = 0f,
+)
+
+/** 本机视频解码器的实时状态（供顶部状态信息浮窗显示） */
+data class DecoderStats(
+    val codec: Codec,
+    val name: String,
+    val hardware: Boolean,
+    val decodeMs: Float?,
 )
 
 /**

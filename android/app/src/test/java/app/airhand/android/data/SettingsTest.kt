@@ -27,4 +27,14 @@ class SettingsTest {
         assertEquals(custom, Settings.parse(custom.toJson()))
         assertEquals(100, Settings.parse(JSONObject().put("wheelSpeed", 0)).wheelSpeed)
     }
+
+    /** 顶部状态信息浮窗：默认开启，关闭后记得住 */
+    @Test
+    fun showStatsIsOnByDefaultAndRemembered() {
+        assertTrue(Settings().showStats)
+        assertTrue(Settings.parse(JSONObject()).showStats)
+        val off = Settings(showStats = false)
+        assertFalse(Settings.parse(off.toJson()).showStats)
+        assertEquals(off, Settings.parse(off.toJson()))
+    }
 }

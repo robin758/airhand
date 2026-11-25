@@ -80,6 +80,8 @@ data class Settings(
     val tvScale: ScaleMode = ScaleMode.FIT,
     /** 控制手机时显示返回 / 主页 / 最近任务按钮 */
     val navKeys: Boolean = true,
+    /** 远程画面顶部显示实时状态信息浮窗（连接、编码、帧率、分辨率、码率、解码耗时、延迟等） */
+    val showStats: Boolean = true,
     /**
      * 对方把光标画进了画面里时（拖动、缩放窗口等）也画本机的光标：跟手，只是和画面里的那个一起有两个。
      * 关掉时只看画面里的（见 [app.airhand.android.ui.session.RemoteView]）
@@ -117,6 +119,7 @@ data class Settings(
         .put("codec", codec)
         .put("tvScale", tvScale.id)
         .put("navKeys", navKeys)
+        .put("showStats", showStats)
         .put("localCursor", localCursor)
         .put("reverseWheel", reverseWheel)
         .put("wheelSpeed", wheelSpeed)
@@ -142,6 +145,7 @@ data class Settings(
                 codec = o.optString("codec", d.codec),
                 tvScale = ScaleMode.of(o.optStringOrNull("tvScale")),
                 navKeys = o.optBoolean("navKeys", d.navKeys),
+                showStats = o.optBoolean("showStats", d.showStats),
                 localCursor = o.optBoolean("localCursor", d.localCursor),
                 reverseWheel = o.optBoolean("reverseWheel", d.reverseWheel),
                 wheelSpeed = o.optInt("wheelSpeed", d.wheelSpeed).takeIf { it in WHEEL_SPEEDS } ?: d.wheelSpeed,

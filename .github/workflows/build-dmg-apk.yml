@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（X.Y.Z 或 X.Y.Z-rc.N，例如 0.4.1-rc.3）"
+        description: "版本号（X.Y.Z 或 X.Y.Z-rc.N，例如 0.4.1-rc.4）"
         required: false
-        default: "0.4.1-rc.3"
+        default: "0.4.1-rc.4"
         type: string
       macos_arch:
         description: "macOS 架构"
@@ -38,7 +38,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 90
     env:
-      VERSION: ${{ inputs.version || '0.4.1-rc.3' }}
+      VERSION: ${{ inputs.version || '0.4.1-rc.4' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      VERSION: ${{ inputs.version || '0.4.1-rc.3' }}
+      VERSION: ${{ inputs.version || '0.4.1-rc.4' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -144,13 +144,13 @@ jobs:
             echo "::warning::Secret ANDROID_KEYSTORE_BASE64 is not set: the APK is signed with a throwaway debug key and can't be installed over earlier releases"
           fi
 
-      - name: Build APK
+      - name: Test & Build APK
         working-directory: android
         env:
           AIRHAND_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           AIRHAND_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           AIRHAND_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease -Pkotlin.compiler.execution.strategy=in-process
+        run: ./gradlew testDebugUnitTest assembleRelease -Pkotlin.compiler.execution.strategy=in-process
 
       - name: Collect
         run: |

@@ -74,6 +74,8 @@ const WATCH_READY: Duration = Duration::from_secs(2);
 /// 本机的显示器回来了这么久才撤掉虚拟显示器、打开盖子之后这么久还没回到镜像才自己放回去（开盖、合盖的过程中
 /// 显示器会来回变）
 const SETTLE: Duration = Duration::from_secs(2);
+/// 合盖后虚拟显示器已经退出镜像独立工作：稍等 WindowServer 完成切换就检查并切回 HiDPI（缩短合盖后的模糊等待）
+const MODE_SETTLE: Duration = Duration::from_millis(500);
 /// 多久看一次用的是不是外接电源
 const AC_CHECK: Duration = Duration::from_secs(5);
 /// 建不出来的话过这么久再试
@@ -748,7 +750,7 @@ fn run() {
                     follow_mode(&f.display);
                 }
             }
-            (Some(f), _) => mode_check = Some((f.display.id, Some(now + SETTLE))),
+            (Some(f), _) => mode_check = Some((f.display.id, Some(now + MODE_SETTLE))),
         }
         if filling.is_none() && curtain.is_none() {
             // 没事可做了：退出（下一个会话加入、打开"不自动睡眠"时再启动）。台式机上预备不用管。
@@ -765,13 +767,17 @@ fn run() {
             }
         }
         let starting = curtain.as_ref().is_some_and(|(c, _)| !c.ready());
-        wait(if starting {
+        let mut period = if starting {
             STARTING
         } else if sessions || curtain.is_some() {
             WATCH
         } else {
             WATCH_READY
-        });
+        };
+        if let Some((_, Some(due))) = mode_check {
+            period = period.min(due.saturating_duration_since(Instant::now()));
+        }
+        wait(period);
     }
     info!("virtual display manager stopped");
 }

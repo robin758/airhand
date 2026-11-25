@@ -284,6 +284,8 @@ export type SessionEvent =
       fps: number;
       kbps: number;
       rttMs: number | null;
+      jitterMs?: number;
+      lossPct?: number;
       width: number;
       height: number;
       frames: number;

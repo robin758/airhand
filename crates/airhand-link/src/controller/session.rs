@@ -268,11 +268,13 @@ pub enum SessionEvent {
         shown: Vec<u8>,
     },
     /// 每秒一次。`fps`：最快的那一路的帧率；`kbps`：所有的画面和声音；`width` / `height`：第 0 路画面的大小；
-    /// `frames`：一共收到了几帧（所有的路）
+    /// `frames`：一共收到了几帧（所有的路）；`jitter_ms`：往返时延抖动（毫秒）；`loss_pct`：丢包/重传卡顿占比（0..100）
     Stats {
         fps: f32,
         kbps: f32,
         rtt_ms: Option<f32>,
+        jitter_ms: f32,
+        loss_pct: f32,
         width: u16,
         height: u16,
         frames: u64,
@@ -358,6 +360,17 @@ struct Stats {
     w: u16,
     h: u16,
     rtt: Option<f32>,
+    /// 上一次 Pong 的原始往返时延样本（毫秒），用于计算抖动
+    last_rtt_sample: Option<f32>,
+    /// 往返时延抖动（毫秒，相邻 Pong 差值的指数平滑）
+    jitter: Option<f32>,
+    /// 这一秒通过 VideoReport 累计的收完帧数和因丢包重传停顿过的帧数
+    report_frames: u32,
+    report_stalled: u32,
+    /// 这一秒因缺参考帧跳过的帧数
+    skipped: u32,
+    /// 平滑后的丢包率（0..100）
+    loss_pct: f32,
     last_msg: Instant,
     /// 最近一帧画面是从直连来的
     direct: bool,
@@ -372,6 +385,12 @@ impl Default for Stats {
             w: 0,
             h: 0,
             rtt: None,
+            last_rtt_sample: None,
+            jitter: None,
+            report_frames: 0,
+            report_stalled: 0,
+            skipped: 0,
+            loss_pct: 0.0,
             last_msg: Instant::now(),
             direct: false,
         }
@@ -526,6 +545,7 @@ pub(super) async fn run(
 
     let out = ui.clone();
     let st = stats.clone();
+    let reporter_stats = stats.clone();
     let clip_in = local_clip.clone();
     let keyframe_tx = tx.clone();
     let acker = feedback.clone();
@@ -574,7 +594,10 @@ pub(super) async fn run(
                     match v {
                         // 解不了的增量帧不交给界面，这里替它确认：不然被控端的在途窗口停住，恢复的帧也发不过来
                         Video::Skipped { seq, arrived } => {
-                            st.lock().unwrap().last_msg = Instant::now();
+                            let mut s = st.lock().unwrap();
+                            s.last_msg = Instant::now();
+                            s.skipped += 1;
+                            drop(s);
                             acker.ack(stream, seq, arrived);
                         }
                         // 等不到一帧了：请被控端恢复这一路
@@ -601,6 +624,14 @@ pub(super) async fn run(
                     let rtt = {
                         let mut s = st.lock().unwrap();
                         s.last_msg = Instant::now();
+                        if let Some(prev) = s.last_rtt_sample {
+                            let diff = (sample - prev).abs();
+                            s.jitter = Some(match s.jitter {
+                                Some(j) => j * 0.75 + diff * 0.25,
+                                None => diff,
+                            });
+                        }
+                        s.last_rtt_sample = Some(sample);
                         let rtt = match s.rtt {
                             Some(r) => r * 0.7 + sample * 0.3,
                             None => sample,
@@ -763,10 +794,26 @@ pub(super) async fn run(
                 if s.last_msg.elapsed() > HOST_TIMEOUT {
                     return Err(Problem::HostUnresponsive.into());
                 }
+                let sample_total = s.report_frames + s.skipped;
+                if sample_total > 0 {
+                    let lost = (s.report_stalled + s.skipped).min(sample_total);
+                    let inst = lost as f32 * 100.0 / sample_total as f32;
+                    s.loss_pct = s.loss_pct * 0.5 + inst * 0.5;
+                    if s.loss_pct < 0.05 {
+                        s.loss_pct = 0.0;
+                    }
+                } else if s.loss_pct > 0.0 {
+                    s.loss_pct *= 0.5;
+                    if s.loss_pct < 0.05 {
+                        s.loss_pct = 0.0;
+                    }
+                }
                 let e = SessionEvent::Stats {
                     fps: s.frames.iter().copied().max().unwrap_or(0) as f32 / dt,
                     kbps: s.bytes as f32 * 8.0 / 1000.0 / dt,
                     rtt_ms: s.rtt,
+                    jitter_ms: s.jitter.unwrap_or(0.0),
+                    loss_pct: s.loss_pct.clamp(0.0, 100.0),
                     width: s.w,
                     height: s.h,
                     frames: s.total,
@@ -774,6 +821,9 @@ pub(super) async fn run(
                 };
                 s.frames = [0; MAX_STREAMS as usize];
                 s.bytes = 0;
+                s.report_frames = 0;
+                s.report_stalled = 0;
+                s.skipped = 0;
                 e
             };
             out.event(event).map_err(|_| ui_closed())?;
@@ -792,6 +842,11 @@ pub(super) async fn run(
             for (stream, stats) in video_stats.iter().enumerate() {
                 let r = stats.take();
                 if !r.is_empty() {
+                    {
+                        let mut s = reporter_stats.lock().unwrap();
+                        s.report_frames += r.frames;
+                        s.report_stalled += r.stalled;
+                    }
                     reporter_feedback.report(stream as u8, r);
                 }
             }
@@ -1097,13 +1152,18 @@ mod tests {
             fps: 30.0,
             kbps: 1.0,
             rtt_ms: None,
+            jitter_ms: 1.5,
+            loss_pct: 0.0,
             width: 1,
             height: 1,
             frames: 2,
             direct: true,
         };
-        assert_eq!(serde_json::to_value(&s).unwrap()["rttMs"], json!(null));
-        assert_eq!(serde_json::to_value(&s).unwrap()["direct"], json!(true));
+        let sv = serde_json::to_value(&s).unwrap();
+        assert_eq!(sv["rttMs"], json!(null));
+        assert_eq!(sv["jitterMs"], json!(1.5));
+        assert_eq!(sv["lossPct"], json!(0.0));
+        assert_eq!(sv["direct"], json!(true));
         let c = SessionEvent::Closed {
             reason: Problem::from(airhand_proto::session::ByeReason::CodeChanged),
             retry: false,

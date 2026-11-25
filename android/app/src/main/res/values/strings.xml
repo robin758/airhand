@@ -183,6 +183,10 @@
     <string name="av_sync_desc">Align picture and sound for videos, with extra control latency. Active while sound is playing.</string>
     <string name="menu_av_sync_on">A/V sync on</string>
     <string name="menu_av_sync_off">A/V sync off</string>
+    <string name="show_stats">Show stats overlay</string>
+    <string name="show_stats_desc">Show connection, codec, FPS, resolution, bitrate, decoder and latency at the top of the screen</string>
+    <string name="menu_stats_on">Stats on</string>
+    <string name="menu_stats_off">Stats off</string>
     <string name="nav_keys">Navigation keys for phones</string>
     <string name="nav_keys_desc">Back, Home and Recents below the screen when controlling a phone</string>
     <string name="local_cursor">Local cursor while dragging windows</string>
@@ -238,6 +242,21 @@
     <!-- 画面走的路：直连不经过服务器，中转经过服务器 -->
     <string name="path_direct">Direct</string>
     <string name="path_relayed">Relayed</string>
+    <string name="hud_connection">Link</string>
+    <string name="hud_path_direct">Direct UDP</string>
+    <string name="hud_path_relayed">Relayed UDP</string>
+    <string name="hud_codec">Codec</string>
+    <string name="hud_fps">FPS</string>
+    <string name="hud_resolution">Resolution</string>
+    <string name="hud_bitrate">Bitrate</string>
+    <string name="hud_decoder">Decoder</string>
+    <string name="hud_decoder_hw">Hardware</string>
+    <string name="hud_decoder_sw">Software</string>
+    <string name="hud_decode_time">Decode</string>
+    <string name="hud_rtt">RTT</string>
+    <string name="hud_jitter">Jitter</string>
+    <string name="hud_loss">Loss</string>
+    <string name="hud_unknown">Unknown</string>
     <string name="clipboard_received">Copied the remote clipboard</string>
     <string name="audio_playback_failed">Can\'t play the sound: %1$s</string>
     <string name="menu_keyboard">Keyboard</string>

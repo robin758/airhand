@@ -178,6 +178,10 @@
     <string name="av_sync_desc">看视频时让画面与声音对齐，会增加操作延迟；播放声音时生效</string>
     <string name="menu_av_sync_on">音画同步：开</string>
     <string name="menu_av_sync_off">音画同步：关</string>
+    <string name="show_stats">顶部显示状态信息</string>
+    <string name="show_stats_desc">在远程画面顶部显示连接方式、编码、帧率、分辨率、码率、解码耗时和延迟</string>
+    <string name="menu_stats_on">状态信息：开</string>
+    <string name="menu_stats_off">状态信息：关</string>
     <string name="nav_keys">控制手机时显示导航键</string>
     <string name="nav_keys_desc">在画面下方显示返回、主页、最近任务</string>
     <string name="local_cursor">拖动窗口时显示本地光标</string>
@@ -231,6 +235,21 @@
     <!-- 画面走的路：直连不经过服务器，中转经过服务器 -->
     <string name="path_direct">直连</string>
     <string name="path_relayed">中转</string>
+    <string name="hud_connection">连接</string>
+    <string name="hud_path_direct">直连 UDP</string>
+    <string name="hud_path_relayed">中转 UDP</string>
+    <string name="hud_codec">编码格式</string>
+    <string name="hud_fps">帧率</string>
+    <string name="hud_resolution">分辨率</string>
+    <string name="hud_bitrate">码率</string>
+    <string name="hud_decoder">解码器</string>
+    <string name="hud_decoder_hw">硬件</string>
+    <string name="hud_decoder_sw">软件</string>
+    <string name="hud_decode_time">解码耗时</string>
+    <string name="hud_rtt">RTT</string>
+    <string name="hud_jitter">抖动</string>
+    <string name="hud_loss">丢包</string>
+    <string name="hud_unknown">未知</string>
     <string name="clipboard_received">已复制对方的剪贴板内容</string>
     <string name="audio_playback_failed">无法播放声音：%1$s</string>
     <string name="menu_keyboard">键盘</string>

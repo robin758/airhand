@@ -8,6 +8,7 @@ import android.view.Surface
 import app.airhand.android.AirhandApp
 import app.airhand.android.core.ClipFiles
 import app.airhand.android.core.Codec
+import app.airhand.android.core.DecoderStats
 import app.airhand.android.core.DisplayInfo
 import app.airhand.android.core.EncoderInfo
 import app.airhand.android.core.HostHello
@@ -96,6 +97,7 @@ class RemoteSession(
     val currentDisplay = MutableStateFlow(0)
     val encoder = MutableStateFlow<EncoderInfo?>(null)
     val stats = MutableStateFlow<Stats?>(null)
+    val decoderStats = MutableStateFlow<DecoderStats?>(null)
 
     /** 被控端的提示，按类别（capture / audio / permissions / other）各保留一条 */
     val notices = MutableStateFlow<Map<String, Notice>>(emptyMap())
@@ -181,6 +183,7 @@ class RemoteSession(
         sync,
         requestKeyframe = { command { Commands.keyframe(it) } },
         onTooLarge = { c, w, h -> onTooLarge(c, w, h) },
+        onStats = { decoderStats.value = it },
     )
 
     /** 收到过本机解码器放不下的画面：按画面尺寸算出的短边上限（只对那种格式有效；对方换了屏幕 / 转了屏就作废） */
@@ -269,6 +272,7 @@ class RemoteSession(
                     sid = -1
                     resetPrivacy()
                     decoder.resetStream()
+                    stats.value = null
                     stopAudio()
                     if (closed) break
                     if (!end.second) {
@@ -489,12 +493,14 @@ class RemoteSession(
                 refreshSettings()
             }
             "stats" -> stats.value = Stats(
-                e.optDouble("fps").toFloat(),
-                e.optDouble("kbps").toFloat(),
-                if (e.isNull("rttMs")) null else e.optDouble("rttMs").toFloat(),
-                e.optInt("width"),
-                e.optInt("height"),
-                e.optBoolean("direct"),
+                fps = e.optDouble("fps").toFloat(),
+                kbps = e.optDouble("kbps").toFloat(),
+                rttMs = if (e.isNull("rttMs")) null else e.optDouble("rttMs").toFloat(),
+                width = e.optInt("width"),
+                height = e.optInt("height"),
+                direct = e.optBoolean("direct"),
+                jitterMs = e.optDouble("jitterMs", 0.0).toFloat(),
+                lossPct = e.optDouble("lossPct", 0.0).toFloat(),
             )
             "notice" -> {
                 val o = e.optJSONObject("notice") ?: return

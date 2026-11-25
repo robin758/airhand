@@ -147,6 +147,9 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
         Toggle(Icons.Outlined.Sync, stringResource(R.string.av_sync), stringResource(R.string.av_sync_desc), s.avSync) { v ->
             app.updateSettings { it.copy(avSync = v) }
         }
+        Toggle(Icons.Outlined.Speed, stringResource(R.string.show_stats), stringResource(R.string.show_stats_desc), s.showStats) { v ->
+            app.updateSettings { it.copy(showStats = v) }
+        }
         Toggle(Icons.Outlined.Navigation, stringResource(R.string.nav_keys), stringResource(R.string.nav_keys_desc), s.navKeys) { v ->
             app.updateSettings { it.copy(navKeys = v) }
         }

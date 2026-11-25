@@ -53,6 +53,7 @@ import androidx.compose.material.icons.outlined.Mouse
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.RemoveModerator
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.StayCurrentLandscape
 import androidx.compose.material.icons.outlined.StayCurrentPortrait
@@ -110,9 +111,12 @@ import app.airhand.android.controller.RemoteSession
 import app.airhand.android.controller.VideoDecoder
 import app.airhand.android.core.Code
 import app.airhand.android.core.Codec
+import app.airhand.android.core.DecoderStats
+import app.airhand.android.core.EncoderInfo
 import app.airhand.android.core.OsKind
 import app.airhand.android.core.Preset
 import app.airhand.android.core.PrivacyState
+import app.airhand.android.core.Stats
 import app.airhand.android.core.SystemAction
 import app.airhand.android.data.TouchMode
 import app.airhand.android.ui.ConfirmDialog
@@ -121,6 +125,7 @@ import app.airhand.android.ui.OsAvatar
 import app.airhand.android.ui.phone.presetDesc
 import app.airhand.android.ui.phone.presetName
 import app.airhand.android.ui.theme.Brand
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /** 手机上看到的操作方式：触控板 / 触屏（控制手机时"触屏"就是直通） */
@@ -166,6 +171,9 @@ fun PhoneSession(
     val ctx = LocalContext.current
     val settings by app.settings.flow.collectAsState()
     val video by session.videoSize.collectAsState()
+    val stats by session.stats.collectAsState()
+    val encoder by session.encoder.collectAsState()
+    val decoderStats by session.decoderStats.collectAsState()
     val cursor by session.cursor.collectAsState()
     val hello by session.hello.collectAsState()
     val hostOs by session.hostOs.collectAsState()
@@ -259,11 +267,17 @@ fun PhoneSession(
                 Modifier
                     .align(Alignment.TopCenter)
                     .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(top = 8.dp, start = 56.dp, end = 56.dp),
+                    .padding(top = 6.dp, start = 12.dp, end = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                if (settings.showStats && !covered) {
+                    StatsHud(stats = stats, encoder = encoder, decoder = decoderStats, video = video)
+                }
                 messages.forEach { (key, text) ->
-                    NoticePill(text) { dismissed = dismissed + key }
+                    Box(Modifier.padding(horizontal = 44.dp)) {
+                        NoticePill(text) { dismissed = dismissed + key }
+                    }
                 }
             }
         }
@@ -350,6 +364,8 @@ fun PhoneSession(
                 when (page) {
                     Page.MAIN -> MainMenu(
                         session, view, name, os, mode, landscape, gameOn,
+                        showStats = settings.showStats,
+                        onToggleStats = { app.updateSettings { it.copy(showStats = !it.showStats) } },
                         onMode = { mode = it },
                         onRotate = {
                             menu = false
@@ -491,6 +507,91 @@ private fun MenuHandle(bottomInset: androidx.compose.ui.unit.Dp, onClick: () -> 
     }
 }
 
+// ───────────────────────────── 顶部状态信息浮窗 ─────────────────────────────
+
+/**
+ * 远程画面顶部的实时状态浮窗：连接方式、编码格式、帧率、分辨率、码率、解码器、解码耗时、RTT、抖动、丢包。
+ * 不使用带点击拦截的 Surface，触摸事件直接穿透到底层的远程画面（不遮挡顶部菜单栏点击）。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StatsHud(
+    stats: Stats?,
+    encoder: EncoderInfo?,
+    decoder: DecoderStats?,
+    video: Pair<Int, Int>?,
+) {
+    val hasVideo = video != null || (stats?.width ?: 0) > 0
+    val link = if (stats != null && hasVideo) {
+        stringResource(if (stats.direct) R.string.hud_path_direct else R.string.hud_path_relayed)
+    } else {
+        "--"
+    }
+    val codec = (decoder?.codec ?: encoder?.codec)?.label ?: stringResource(R.string.hud_unknown)
+    val fps = "%.1f fps".format(Locale.US, stats?.fps ?: 0f)
+    val resW = video?.first ?: stats?.width ?: 0
+    val resH = video?.second ?: stats?.height ?: 0
+    val resolution = "${resW}×${resH}"
+    val bitrate = stats?.kbps?.takeIf { it > 0f }?.let {
+        if (it >= 1000f) "%.1f Mbps".format(Locale.US, it / 1000f)
+        else "${it.roundToInt()} kbps"
+    } ?: "--"
+    val dec = decoder?.let {
+        stringResource(if (it.hardware) R.string.hud_decoder_hw else R.string.hud_decoder_sw)
+    } ?: stringResource(R.string.hud_unknown)
+    val decodeTime = decoder?.decodeMs?.let { "%.1f ms".format(Locale.US, it) } ?: "--"
+    val rtt = stats?.rttMs?.let { "${it.roundToInt()} ms" } ?: "--"
+    val jitter = "%.1f ms".format(Locale.US, stats?.jitterMs ?: 0f)
+    val loss = "%.1f%%".format(Locale.US, stats?.lossPct ?: 0f)
+
+    Box(
+        Modifier
+            .widthIn(max = 680.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color.Black.copy(alpha = 0.65f))
+            .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            HudItem(stringResource(R.string.hud_connection), link)
+            HudItem(stringResource(R.string.hud_codec), codec)
+            HudItem(stringResource(R.string.hud_fps), fps)
+            HudItem(stringResource(R.string.hud_resolution), resolution)
+            HudItem(stringResource(R.string.hud_bitrate), bitrate)
+            HudItem(stringResource(R.string.hud_decoder), dec)
+            HudItem(stringResource(R.string.hud_decode_time), decodeTime)
+            HudItem(stringResource(R.string.hud_rtt), rtt)
+            HudItem(stringResource(R.string.hud_jitter), jitter)
+            HudItem(stringResource(R.string.hud_loss), loss)
+        }
+    }
+}
+
+@Composable
+private fun HudItem(label: String, value: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "$label: ",
+            color = Color.White.copy(alpha = 0.7f),
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            maxLines = 1,
+        )
+        Text(
+            value,
+            color = Color.White,
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+            maxLines = 1,
+        )
+    }
+}
+
 // ───────────────────────────── 菜单 ─────────────────────────────
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -503,6 +604,8 @@ private fun MainMenu(
     mode: UiMode,
     landscape: Boolean,
     gameOn: Boolean,
+    showStats: Boolean,
+    onToggleStats: () -> Unit,
     onMode: (UiMode) -> Unit,
     onRotate: () -> Unit,
     onKeyboard: () -> Unit,
@@ -511,6 +614,7 @@ private fun MainMenu(
     onDisconnect: () -> Unit,
 ) {
     val stats by session.stats.collectAsState()
+    val video by session.videoSize.collectAsState()
     val encoder by session.encoder.collectAsState()
     val displays by session.displays.collectAsState()
     val audioOn by session.audioOn.collectAsState()
@@ -527,6 +631,7 @@ private fun MainMenu(
             Text(name.ifBlank { Code.format(session.code) }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val parts = listOfNotNull(
                 encoder?.codec?.label,
+                (video ?: stats?.takeIf { it.width > 0 }?.let { it.width to it.height })?.let { "${it.first}×${it.second}" },
                 stats?.let { "${it.fps.roundToInt()} fps" },
                 stats?.rttMs?.let { stringResource(R.string.latency_ms, it.roundToInt()) },
                 stats?.let { if (it.kbps >= 1000) "%.1f Mbps".format(it.kbps / 1000) else "${it.kbps.roundToInt()} kbps" },
@@ -580,6 +685,13 @@ private fun MainMenu(
             session.setAvSync(!avSyncOn)
         }
         Action(Icons.Outlined.HighQuality, stringResource(R.string.menu_quality), cell) { onPage(Page.QUALITY) }
+        Action(
+            Icons.Outlined.Speed,
+            stringResource(if (showStats) R.string.menu_stats_on else R.string.menu_stats_off),
+            cell,
+            active = showStats,
+            onClick = onToggleStats,
+        )
         Action(Icons.Outlined.ContentPaste, stringResource(R.string.menu_clipboard), cell) { onPage(Page.CLIPBOARD) }
         if (displays.size > 1) {
             Action(Icons.Outlined.Monitor, stringResource(R.string.menu_displays), cell) { onPage(Page.DISPLAYS) }
@@ -615,7 +727,7 @@ private fun MainMenu(
         Action(Icons.AutoMirrored.Outlined.HelpOutline, stringResource(R.string.menu_help), cell) { onPage(Page.HELP) }
         Action(Icons.Outlined.LinkOff, stringResource(R.string.disconnect), cell, danger = true, onClick = onDisconnect)
         // 补齐最后一行，保持格子宽度一致
-        val items = 10 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
+        val items = 11 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
         repeat((4 - items % 4) % 4) { Spacer(cell) }
     }
 }
