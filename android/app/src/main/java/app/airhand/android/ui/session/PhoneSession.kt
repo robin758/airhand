@@ -152,7 +152,7 @@ private fun initialMode(setting: TouchMode, os: OsKind) = when (setting) {
     TouchMode.AUTO -> if (os == OsKind.ANDROID || os == OsKind.IOS) UiMode.TOUCH else UiMode.TRACKPAD
 }
 
-private enum class Page { MAIN, SHORTCUTS, DISPLAYS, QUALITY, CONTROLS, CLIPBOARD, PRIVACY, GAME, HELP }
+private enum class Page { MAIN, VIDEO, AUDIO, MOUSE_TOUCH, KEYBOARD, ON_SCREEN_KEYS, HELP }
 
 /**
  * 手机上的远程画面。
@@ -376,16 +376,17 @@ fun PhoneSession(
             sheetState = sheet,
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ) {
+            val menuScroll = rememberScrollState()
             BackHandler(enabled = page != Page.MAIN) { page = Page.MAIN }
+            LaunchedEffect(page) { menuScroll.scrollTo(0) }
             Column(
                 Modifier
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(menuScroll)
                     .padding(bottom = 16.dp),
             ) {
                 when (page) {
                     Page.MAIN -> MainMenu(
-                        session, view, name, os, mode, landscape, gameOn,
-                        onMode = { mode = it },
+                        session, name, landscape, gameOn,
                         onRotate = {
                             menu = false
                             onRotate()
@@ -401,47 +402,66 @@ fun PhoneSession(
                             confirmExit = true
                         },
                     )
-                    Page.SHORTCUTS -> SubPage(stringResource(R.string.menu_shortcuts), { page = Page.MAIN }) {
-                        if (actions.isNotEmpty()) {
-                            // 手机：系统操作（对方列出的）
-                            SystemActions(actions) { a ->
-                                session.system(a)
-                                menu = false
-                            }
-                        } else {
-                            if (os == OsKind.MAC) SwapCtrlCommand(session)
-                            Shortcuts(os) { codes ->
+                    Page.VIDEO -> SubPage(stringResource(R.string.cat_video), { page = Page.MAIN }) {
+                        VideoCategoryPage(
+                            session = session,
+                            view = view,
+                            os = os,
+                            settings = settings,
+                            onUpdate = { update -> app.updateSettings(update) },
+                            onClose = { menu = false },
+                        )
+                    }
+                    Page.AUDIO -> SubPage(stringResource(R.string.cat_audio), { page = Page.MAIN }) {
+                        AudioCategoryPage(session)
+                    }
+                    Page.MOUSE_TOUCH -> SubPage(stringResource(R.string.cat_mouse_touch), { page = Page.MAIN }) {
+                        MouseTouchCategoryPage(
+                            session = session,
+                            os = os,
+                            mode = mode,
+                            settings = settings,
+                            onMode = { mode = it },
+                            onUpdate = { update -> app.updateSettings(update) },
+                        )
+                    }
+                    Page.KEYBOARD -> SubPage(stringResource(R.string.cat_keyboard), { page = Page.MAIN }) {
+                        KeyboardCategoryPage(
+                            session = session,
+                            os = os,
+                            actions = actions,
+                            settings = settings,
+                            onUpdate = { update -> app.updateSettings(update) },
+                            onSendCombo = { codes ->
                                 kb.chord(codes)
                                 menu = false
-                            }
-                        }
-                    }
-                    Page.DISPLAYS -> SubPage(stringResource(R.string.menu_displays), { page = Page.MAIN }) {
-                        Displays(session) { menu = false }
-                    }
-                    Page.QUALITY -> SubPage(stringResource(R.string.menu_quality), { page = Page.MAIN }) {
-                        Quality(session)
-                    }
-                    Page.CONTROLS -> SubPage(stringResource(R.string.menu_controls), { page = Page.MAIN }) {
-                        ControlSettings(session, settings) { update -> app.updateSettings(update) }
-                    }
-                    Page.CLIPBOARD -> SubPage(stringResource(R.string.menu_clipboard), { page = Page.MAIN }) {
-                        ClipboardActions(session) { menu = false }
-                    }
-                    Page.PRIVACY -> SubPage(stringResource(R.string.privacy_toggle), { page = Page.MAIN }) {
-                        Privacy(session, os)
-                    }
-                    Page.GAME -> SubPage(stringResource(R.string.menu_game), { page = Page.MAIN }) {
-                        GamePage(
-                            session.code,
-                            onEdit = { l ->
+                            },
+                            onSendAction = { a ->
+                                session.system(a)
                                 menu = false
-                                keyboardOpen.value = false
-                                app.games.setDevice(session.code, on = true, layout = l.id)
-                                editor = view.newEditor(l)
                             },
                             onClose = { menu = false },
                         )
+                    }
+                    Page.ON_SCREEN_KEYS -> SubPage(stringResource(R.string.cat_on_screen_keys), { page = Page.MAIN }) {
+                        if (os != OsKind.ANDROID && os != OsKind.IOS) {
+                            GamePage(
+                                session.code,
+                                onEdit = { l ->
+                                    menu = false
+                                    keyboardOpen.value = false
+                                    app.games.setDevice(session.code, on = true, layout = l.id)
+                                    editor = view.newEditor(l)
+                                },
+                                onClose = { menu = false },
+                            )
+                        } else {
+                            ScrollToggleRow(
+                                title = stringResource(R.string.nav_keys),
+                                desc = stringResource(R.string.nav_keys_desc),
+                                checked = settings.navKeys,
+                            ) { v -> app.updateSettings { it.copy(navKeys = v) } }
+                        }
                     }
                     Page.HELP -> SubPage(stringResource(R.string.menu_help), { page = Page.MAIN }) {
                         GestureHelp(gm)
@@ -638,13 +658,9 @@ private fun HudItem(label: String, value: String) {
 @Composable
 private fun MainMenu(
     session: RemoteSession,
-    view: RemoteView,
     name: String,
-    os: OsKind,
-    mode: UiMode,
     landscape: Boolean,
     gameOn: Boolean,
-    onMode: (UiMode) -> Unit,
     onRotate: () -> Unit,
     onKeyboard: () -> Unit,
     onPage: (Page) -> Unit,
@@ -654,8 +670,8 @@ private fun MainMenu(
     val stats by session.stats.collectAsState()
     val video by session.videoSize.collectAsState()
     val encoder by session.encoder.collectAsState()
-    val displays by session.displays.collectAsState()
     val audioOn by session.audioOn.collectAsState()
+    val avSyncOn by session.avSyncOn.collectAsState()
     val mouseLock by session.mouseLock.collectAsState()
     val hostOs by session.hostOs.collectAsState()
     val safety by session.safety.collectAsState()
@@ -693,70 +709,42 @@ private fun MainMenu(
     }
     Spacer(Modifier.height(8.dp))
 
-    // 操作方式：两个大按钮，一眼看出当前是哪种
-    Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        ModeCard(Icons.Outlined.Mouse, stringResource(R.string.mode_trackpad), stringResource(R.string.mode_trackpad_short), mode == UiMode.TRACKPAD, Modifier.weight(1f)) {
-            onMode(UiMode.TRACKPAD)
-        }
-        ModeCard(
-            Icons.Outlined.TouchApp,
-            stringResource(R.string.mode_touch),
-            stringResource(if (os == OsKind.ANDROID) R.string.mode_touch_phone_short else R.string.mode_touch_short),
-            mode == UiMode.TOUCH,
-            Modifier.weight(1f),
-        ) { onMode(UiMode.TOUCH) }
-    }
-    Spacer(Modifier.height(12.dp))
-
+    // 4 个最高频单步快捷动作
     FlowRow(
         Modifier.padding(horizontal = 8.dp),
         maxItemsInEachRow = 4,
     ) {
         val cell = Modifier.weight(1f)
         Action(Icons.Outlined.Keyboard, stringResource(R.string.menu_keyboard), cell, onClick = onKeyboard)
-        Action(Icons.Outlined.KeyboardCommandKey, stringResource(R.string.menu_shortcuts), cell) { onPage(Page.SHORTCUTS) }
-        Action(if (audioOn) Icons.AutoMirrored.Outlined.VolumeUp else Icons.AutoMirrored.Outlined.VolumeOff, stringResource(if (audioOn) R.string.menu_sound_on else R.string.menu_sound_off), cell, active = audioOn) {
-            session.setAudio(!audioOn)
-        }
-        Action(Icons.Outlined.HighQuality, stringResource(R.string.menu_quality), cell) { onPage(Page.QUALITY) }
-        Action(Icons.Outlined.Settings, stringResource(R.string.menu_controls), cell) { onPage(Page.CONTROLS) }
-        Action(Icons.Outlined.ContentPaste, stringResource(R.string.menu_clipboard), cell) { onPage(Page.CLIPBOARD) }
-        if (displays.size > 1) {
-            Action(Icons.Outlined.Monitor, stringResource(R.string.menu_displays), cell) { onPage(Page.DISPLAYS) }
-        }
-        // 防窥模式：对方（Windows、Mac）说了它的状态才有；点开是开关和说明（开不了时写着为什么）
-        privacy?.let { p ->
-            Action(
-                if (p.active) Icons.Outlined.Shield else Icons.Outlined.RemoveModerator,
-                stringResource(if (p.active) R.string.menu_privacy_on else R.string.menu_privacy_off),
-                cell,
-                active = p.active,
-            ) { onPage(Page.PRIVACY) }
-        }
-        // 锁定鼠标（控制电脑时）：鼠标一直只发移动了多少，游戏里转视角用；游戏按键：画面上的按钮和摇杆
-        val lockable = os != OsKind.ANDROID && os != OsKind.IOS
-        if (lockable) {
-            Action(Icons.Outlined.Lock, stringResource(if (mouseLock) R.string.menu_mouse_lock_on else R.string.menu_mouse_lock_off), cell, active = mouseLock) {
-                session.mouseLock.value = !mouseLock
-            }
-            Action(Icons.Outlined.SportsEsports, stringResource(R.string.menu_game), cell, active = gameOn) { onPage(Page.GAME) }
-        }
-        Action(Icons.Outlined.Crop, stringResource(R.string.menu_fit), cell, enabled = view.zoomed) {
-            view.fit()
-            onClose()
-        }
-        // 横屏 / 竖屏：显示目标方向，点击立即切换
+        Action(
+            if (audioOn) Icons.AutoMirrored.Outlined.VolumeUp else Icons.AutoMirrored.Outlined.VolumeOff,
+            stringResource(if (audioOn) R.string.menu_sound_on else R.string.menu_sound_off),
+            cell,
+            active = audioOn,
+        ) { session.setAudio(!audioOn) }
         Action(
             if (landscape) Icons.Outlined.StayCurrentPortrait else Icons.Outlined.StayCurrentLandscape,
             stringResource(if (landscape) R.string.menu_to_portrait else R.string.menu_to_landscape),
             cell,
             onClick = onRotate,
         )
-        Action(Icons.AutoMirrored.Outlined.HelpOutline, stringResource(R.string.menu_help), cell) { onPage(Page.HELP) }
         Action(Icons.Outlined.LinkOff, stringResource(R.string.disconnect), cell, danger = true, onClick = onDisconnect)
-        // 补齐最后一行，保持格子宽度一致
-        val items = 10 + (if (displays.size > 1) 1 else 0) + (if (privacy != null) 1 else 0) + (if (lockable) 2 else 0)
-        repeat((4 - items % 4) % 4) { Spacer(cell) }
+    }
+
+    HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+
+    // 固定 6 个一级分类（2×3），与首页「设置」完全对齐，后续新增细分项不再膨胀主菜单
+    FlowRow(
+        Modifier.padding(horizontal = 12.dp),
+        maxItemsInEachRow = 3,
+    ) {
+        val cell = Modifier.weight(1f)
+        Action(Icons.Outlined.HighQuality, stringResource(R.string.cat_video), cell, active = privacy?.active == true) { onPage(Page.VIDEO) }
+        Action(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.cat_audio), cell, active = avSyncOn && audioOn) { onPage(Page.AUDIO) }
+        Action(Icons.Outlined.Mouse, stringResource(R.string.cat_mouse_touch), cell, active = mouseLock) { onPage(Page.MOUSE_TOUCH) }
+        Action(Icons.Outlined.KeyboardCommandKey, stringResource(R.string.cat_keyboard), cell) { onPage(Page.KEYBOARD) }
+        Action(Icons.Outlined.SportsEsports, stringResource(R.string.cat_on_screen_keys), cell, active = gameOn) { onPage(Page.ON_SCREEN_KEYS) }
+        Action(Icons.AutoMirrored.Outlined.HelpOutline, stringResource(R.string.menu_help), cell) { onPage(Page.HELP) }
     }
 }
 
@@ -998,19 +986,19 @@ private fun Quality(session: RemoteSession) {
     }
 }
 
-/** 实时控制设置页：分组、选项和顺序与首页「设置」完全一致，改动立即生效并自动保存 */
-@OptIn(ExperimentalLayoutApi::class)
+/** 分类 1：视频与画面（状态浮窗、自动旋转、适应屏幕、画质/编码、多屏切换、防窥模式） */
 @Composable
-private fun ControlSettings(session: RemoteSession, settings: Settings, onUpdate: ((Settings) -> Settings) -> Unit) {
-    val audioOn by session.audioOn.collectAsState()
-    val avSyncOn by session.avSyncOn.collectAsState()
+private fun VideoCategoryPage(
+    session: RemoteSession,
+    view: RemoteView,
+    os: OsKind,
+    settings: Settings,
+    onUpdate: ((Settings) -> Settings) -> Unit,
+    onClose: () -> Unit,
+) {
+    val displays by session.displays.collectAsState()
+    val privacy by session.privacyState.collectAsState()
 
-    Text(
-        stringResource(R.string.settings_display_interaction),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
-    )
     ScrollToggleRow(
         title = stringResource(R.string.show_stats),
         desc = stringResource(R.string.show_stats_desc),
@@ -1021,22 +1009,102 @@ private fun ControlSettings(session: RemoteSession, settings: Settings, onUpdate
         desc = stringResource(R.string.auto_rotate_desc),
         checked = settings.autoRotate,
     ) { v -> onUpdate { it.copy(autoRotate = v) } }
+    if (view.zoomed) {
+        MenuRow(stringResource(R.string.menu_fit), stringResource(R.string.menu_fit_desc)) {
+            view.fit()
+            onClose()
+        }
+    }
+
+    HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+    Text(
+        stringResource(R.string.menu_quality),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+    )
+    Quality(session)
+
+    if (displays.size > 1) {
+        HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+        Text(
+            stringResource(R.string.menu_displays),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+        )
+        Displays(session, onDone = onClose)
+    }
+
+    if (privacy != null) {
+        HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+        Text(
+            stringResource(R.string.privacy_toggle),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+        )
+        Privacy(session, os)
+    }
+}
+
+/** 分类 2：音频（声音开关、音画同步） */
+@Composable
+private fun AudioCategoryPage(session: RemoteSession) {
+    val audioOn by session.audioOn.collectAsState()
+    val avSyncOn by session.avSyncOn.collectAsState()
     ScrollToggleRow(
-        title = stringResource(R.string.double_tap_keyboard),
-        desc = stringResource(R.string.double_tap_keyboard_desc),
-        checked = settings.doubleTapKeyboard,
-    ) { v -> onUpdate { it.copy(doubleTapKeyboard = v) } }
-    ScrollToggleRow(
-        title = stringResource(R.string.local_cursor),
-        desc = stringResource(R.string.local_cursor_desc),
-        checked = settings.localCursor,
-    ) { v -> onUpdate { it.copy(localCursor = v) } }
+        title = stringResource(R.string.play_audio),
+        desc = stringResource(R.string.play_audio_desc),
+        checked = audioOn,
+    ) { v -> session.setAudio(v) }
     ScrollToggleRow(
         title = stringResource(R.string.av_sync),
         desc = stringResource(R.string.av_sync_desc),
         checked = avSyncOn,
         enabled = audioOn,
     ) { v -> session.setAvSync(v) }
+}
+
+/** 分类 3：鼠标与触控（操作方式、锁定鼠标、本地光标、外接鼠标滚轮、屏幕双指滑动） */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MouseTouchCategoryPage(
+    session: RemoteSession,
+    os: OsKind,
+    mode: UiMode,
+    settings: Settings,
+    onMode: (UiMode) -> Unit,
+    onUpdate: ((Settings) -> Settings) -> Unit,
+) {
+    val mouseLock by session.mouseLock.collectAsState()
+    val lockable = os != OsKind.ANDROID && os != OsKind.IOS
+
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ModeCard(Icons.Outlined.Mouse, stringResource(R.string.mode_trackpad), stringResource(R.string.mode_trackpad_short), mode == UiMode.TRACKPAD, Modifier.weight(1f)) {
+            onMode(UiMode.TRACKPAD)
+        }
+        ModeCard(
+            Icons.Outlined.TouchApp,
+            stringResource(R.string.mode_touch),
+            stringResource(if (os == OsKind.ANDROID) R.string.mode_touch_phone_short else R.string.mode_touch_short),
+            mode == UiMode.TOUCH,
+            Modifier.weight(1f),
+        ) { onMode(UiMode.TOUCH) }
+    }
+    Spacer(Modifier.height(6.dp))
+    if (lockable) {
+        ScrollToggleRow(
+            title = stringResource(if (mouseLock) R.string.menu_mouse_lock_on else R.string.menu_mouse_lock_off),
+            desc = stringResource(R.string.menu_mouse_lock_desc),
+            checked = mouseLock,
+        ) { v -> session.mouseLock.value = v }
+    }
+    ScrollToggleRow(
+        title = stringResource(R.string.local_cursor),
+        desc = stringResource(R.string.local_cursor_desc),
+        checked = settings.localCursor,
+    ) { v -> onUpdate { it.copy(localCursor = v) } }
 
     HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
 
@@ -1112,6 +1180,48 @@ private fun ControlSettings(session: RemoteSession, settings: Settings, onUpdate
         desc = stringResource(R.string.touch_scroll_fling_desc),
         checked = settings.touchScrollFling,
     ) { v -> onUpdate { it.copy(touchScrollFling = v) } }
+}
+
+/** 分类 4：键盘与输入（双击浮标开关键盘、剪贴板、Mac 互换 Ctrl/⌘、快捷键/系统操作） */
+@Composable
+private fun KeyboardCategoryPage(
+    session: RemoteSession,
+    os: OsKind,
+    actions: List<SystemAction>,
+    settings: Settings,
+    onUpdate: ((Settings) -> Settings) -> Unit,
+    onSendCombo: (List<String>) -> Unit,
+    onSendAction: (SystemAction) -> Unit,
+    onClose: () -> Unit,
+) {
+    ScrollToggleRow(
+        title = stringResource(R.string.double_tap_keyboard),
+        desc = stringResource(R.string.double_tap_keyboard_desc),
+        checked = settings.doubleTapKeyboard,
+    ) { v -> onUpdate { it.copy(doubleTapKeyboard = v) } }
+
+    HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+    Text(
+        stringResource(R.string.menu_clipboard),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+    )
+    ClipboardActions(session, onDone = onClose)
+
+    HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+    Text(
+        stringResource(R.string.menu_shortcuts),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+    )
+    if (actions.isNotEmpty()) {
+        SystemActions(actions, onSendAction)
+    } else {
+        if (os == OsKind.MAC) SwapCtrlCommand(session)
+        Shortcuts(os, onSendCombo)
+    }
 }
 
 @Composable

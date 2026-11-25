@@ -150,6 +150,14 @@
     <string name="notification_connecting">Connecting to the server…</string>
 
     <!-- Settings -->
+    <string name="cat_video">Video &amp; display</string>
+    <string name="cat_audio">Audio</string>
+    <string name="cat_mouse_touch">Mouse &amp; touch</string>
+    <string name="cat_keyboard">Keyboard &amp; input</string>
+    <string name="cat_on_screen_keys">On-screen keys</string>
+    <string name="cat_network_device">Network &amp; device</string>
+    <string name="cat_about_data">About &amp; data</string>
+    <string name="on_screen_keys_game_note">Game keys for computers can be configured per device under On-screen keys in the session menu.</string>
     <string name="settings_server">Server</string>
     <string name="server_address">Server address</string>
     <string name="server_address_hint">The relay server\'s host:port, e.g. relay.example.com:4433</string>
@@ -282,6 +290,7 @@
     <string name="menu_sound_off">Sound off</string>
     <string name="menu_mouse_lock_on">Mouse lock on</string>
     <string name="menu_mouse_lock_off">Mouse lock off</string>
+    <string name="menu_mouse_lock_desc">Keep sending relative mouse movement for 3D camera control in games</string>
     <string name="menu_quality">Quality</string>
     <string name="menu_controls">Controls</string>
     <string name="menu_scroll">Scrolling</string>
@@ -290,6 +299,7 @@
     <string name="menu_clipboard">Clipboard</string>
     <string name="menu_displays">Displays</string>
     <string name="menu_fit">Fit screen</string>
+    <string name="menu_fit_desc">Reset zoomed view to fit the screen</string>
     <string name="menu_landscape">Landscape</string>
     <string name="menu_portrait">Portrait</string>
     <string name="menu_to_landscape">To landscape</string>

@@ -145,6 +145,14 @@
     <string name="notification_connecting">正在连接服务器…</string>
 
     <!-- 设置 -->
+    <string name="cat_video">视频与画面</string>
+    <string name="cat_audio">音频</string>
+    <string name="cat_mouse_touch">鼠标与触控</string>
+    <string name="cat_keyboard">键盘与输入</string>
+    <string name="cat_on_screen_keys">屏幕按键</string>
+    <string name="cat_network_device">网络与本机</string>
+    <string name="cat_about_data">关于与数据</string>
+    <string name="on_screen_keys_game_note">控制电脑时的游戏按键可在远程画面悬浮窗的「屏幕按键」里按设备配置。</string>
     <string name="settings_server">服务器</string>
     <string name="server_address">服务器地址</string>
     <string name="server_address_hint">中转服务器的 地址:端口，例如 relay.example.com:4433</string>
@@ -275,6 +283,7 @@
     <string name="menu_sound_off">声音：关</string>
     <string name="menu_mouse_lock_on">锁定鼠标：开</string>
     <string name="menu_mouse_lock_off">锁定鼠标：关</string>
+    <string name="menu_mouse_lock_desc">锁定指针并持续发送相对移动量，适合游戏内转动视角</string>
     <string name="menu_quality">画质</string>
     <string name="menu_controls">控制设置</string>
     <string name="menu_scroll">滚动设置</string>
@@ -283,6 +292,7 @@
     <string name="menu_clipboard">剪贴板</string>
     <string name="menu_displays">显示器</string>
     <string name="menu_fit">适应屏幕</string>
+    <string name="menu_fit_desc">将放大后的画面恢复为适应屏幕大小</string>
     <string name="menu_landscape">横屏</string>
     <string name="menu_portrait">竖屏</string>
     <string name="menu_to_landscape">切到横屏</string>

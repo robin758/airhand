@@ -5,7 +5,24 @@
 
 ---
 
-## `0.4.1-rc.6`（2026-11-26）
+## `0.4.1-rc.7`（2026-11-26）
+
+### 界面结构重构（首页设置 & 会话悬浮窗统一大分类）
+1. **首页「设置」升级为 7 个一级大分类导航 + 二级详情页**
+   - 告别超长平铺列表，首页仅展示 **视频与画面、音频、鼠标与触控、键盘与输入、屏幕按键、网络与本机、关于与数据** 7 个大分类入口（每项带当前设置摘要），点进对应二级页调整细项，支持系统返回键回到分类列表。
+2. **远程会话「悬浮窗」重构为「4 个高频快捷 + 6 个固定大分类」**
+   - 顶部保留 **键盘、声音、切到竖/横屏、断开** 4 个最高频单步动作；
+   - 下方固定为 2×3 的 6 个一级大分类入口（**视频与画面、音频、鼠标与触控、键盘与输入、屏幕按键、手势说明**），与首页设置名称和归属 100% 对齐，所有细项（画质、编码、多屏、防窥、适应屏幕、滚轮、双指、快捷键、剪贴板、游戏按键等）均收纳进对应二级分类页，后续新增细项不再使主菜单膨胀。
+
+### 改动位置
+- `android/app/src/main/java/app/airhand/android/ui/phone/SettingsTab.kt`：重构为 7 大一级分类 + 二级详情页（支持 `BackHandler`）
+- `android/app/src/main/java/app/airhand/android/ui/session/PhoneSession.kt`：重构 `MainMenu` 为 4 快捷动作 + 6 一级分类，拆分 `VideoCategoryPage` / `AudioCategoryPage` / `MouseTouchCategoryPage` / `KeyboardCategoryPage`
+- `android/app/src/main/res/values/strings.xml`、`values-zh/strings.xml`：新增统一大分类中英文文案
+- `.github/workflows/build-dmg-apk.yml`：默认版本号更新至 `0.4.1-rc.7`
+
+---
+
+## `0.4.1-rc.6`（2026-11-26，提交 `cd8c622`）
 
 ### 新增功能与体验优化
 1. **滚动速度进一步细腻化（适配小屏手机）**

@@ -1,6 +1,7 @@
 package app.airhand.android.ui.phone
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Dns
@@ -27,6 +30,7 @@ import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material.icons.outlined.StayCurrentLandscape
 import androidx.compose.material.icons.outlined.SwapVert
 import androidx.compose.material.icons.outlined.Sync
@@ -35,6 +39,7 @@ import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +50,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +66,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.airhand.android.AirhandApp
@@ -86,7 +93,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-/** "设置"页。所有设置都保存在应用自己的数据目录里 */
+/** 一级设置分类（与会话悬浮窗的分类完全对齐） */
+private enum class SettingsCategory {
+    VIDEO,
+    AUDIO,
+    MOUSE_TOUCH,
+    KEYBOARD,
+    ON_SCREEN_KEYS,
+    NETWORK_DEVICE,
+    ABOUT,
+}
+
+/** "设置"页：一级分类导航 + 二级详情页，所有设置保存在应用私有目录里 */
 @Composable
 fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
     val app = AirhandApp.instance
@@ -96,128 +114,206 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
     val server by app.controller.server.collectAsState()
     val devices by app.devices.flow.collectAsState()
     val host by HostState.flow.collectAsState()
+    val paired = app.pairing.flow.collectAsState().value?.paired?.size ?: 0
+    val crashes by CrashLog.summary.collectAsState()
+    var category by remember { mutableStateOf<SettingsCategory?>(null) }
     var dialog by remember { mutableStateOf<String?>(null) }
+    val scroll = rememberScrollState()
+
+    BackHandler(enabled = category != null) { category = null }
+    LaunchedEffect(category) { scroll.scrollTo(0) }
 
     Column(
         modifier
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scroll)
             .padding(bottom = 24.dp),
     ) {
-        Text(
-            stringResource(R.string.tab_settings),
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp),
-        )
+        val current = category
+        if (current == null) {
+            Text(
+                stringResource(R.string.tab_settings),
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 8.dp),
+            )
+            val onText = stringResource(R.string.on)
+            val offText = stringResource(R.string.off)
+            CategoryRow(
+                Icons.Outlined.HighQuality,
+                stringResource(R.string.cat_video),
+                "${presetName(Preset.of(s.preset))} · ${stringResource(R.string.auto_rotate)} ${if (s.autoRotate) onText else offText}",
+            ) { category = SettingsCategory.VIDEO }
+            CategoryRow(
+                Icons.AutoMirrored.Outlined.VolumeUp,
+                stringResource(R.string.cat_audio),
+                "${stringResource(R.string.play_audio)} ${if (s.audio) onText else offText} · ${stringResource(R.string.av_sync)} ${if (s.avSync) onText else offText}",
+            ) { category = SettingsCategory.AUDIO }
+            CategoryRow(
+                Icons.Outlined.Mouse,
+                stringResource(R.string.cat_mouse_touch),
+                "${touchModeName(s.touchMode)} · ${stringResource(R.string.percent, s.wheelSpeed)} / ${stringResource(R.string.percent, s.touchScrollSpeed)}",
+            ) { category = SettingsCategory.MOUSE_TOUCH }
+            CategoryRow(
+                Icons.Outlined.Keyboard,
+                stringResource(R.string.cat_keyboard),
+                "${stringResource(R.string.double_tap_keyboard)} ${if (s.doubleTapKeyboard) onText else offText}",
+            ) { category = SettingsCategory.KEYBOARD }
+            CategoryRow(
+                Icons.Outlined.SportsEsports,
+                stringResource(R.string.cat_on_screen_keys),
+                "${stringResource(R.string.nav_keys)} ${if (s.navKeys) onText else offText}",
+            ) { category = SettingsCategory.ON_SCREEN_KEYS }
+            CategoryRow(
+                Icons.Outlined.Dns,
+                stringResource(R.string.cat_network_device),
+                "${s.server} · ${Messages.server(ctx, server)}",
+            ) { category = SettingsCategory.NETWORK_DEVICE }
+            CategoryRow(
+                Icons.Outlined.Info,
+                stringResource(R.string.cat_about_data),
+                "${stringResource(R.string.version_value, BuildConfig.VERSION_NAME, Native.protocolVersion())} · ${stringResource(R.string.clear_devices_desc, devices.size)}",
+            ) { category = SettingsCategory.ABOUT }
+        } else {
+            val title = stringResource(
+                when (current) {
+                    SettingsCategory.VIDEO -> R.string.cat_video
+                    SettingsCategory.AUDIO -> R.string.cat_audio
+                    SettingsCategory.MOUSE_TOUCH -> R.string.cat_mouse_touch
+                    SettingsCategory.KEYBOARD -> R.string.cat_keyboard
+                    SettingsCategory.ON_SCREEN_KEYS -> R.string.cat_on_screen_keys
+                    SettingsCategory.NETWORK_DEVICE -> R.string.cat_network_device
+                    SettingsCategory.ABOUT -> R.string.cat_about_data
+                },
+            )
+            Row(
+                Modifier.padding(start = 8.dp, top = 12.dp, end = 20.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { category = null }) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.back))
+                }
+                Text(title, style = MaterialTheme.typography.titleLarge)
+            }
 
-        SectionTitle(stringResource(R.string.settings_server))
-        Item(Icons.Outlined.Dns, stringResource(R.string.server_address), s.server) { dialog = "server" }
-        val learned = s.learnedFp
-        Item(
-            Icons.Outlined.VerifiedUser,
-            stringResource(R.string.server_fingerprint),
-            when {
-                s.fingerprint.isNotBlank() -> s.fingerprint
-                learned != null -> stringResource(R.string.fingerprint_learned, learned.take(16))
-                else -> stringResource(R.string.fingerprint_none)
-            },
-        ) { dialog = "fingerprint" }
-        Text(
-            Messages.server(ctx, server),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 72.dp, end = 20.dp, bottom = 4.dp),
-        )
+            when (current) {
+                SettingsCategory.VIDEO -> {
+                    Item(Icons.Outlined.HighQuality, stringResource(R.string.default_quality), presetName(Preset.of(s.preset))) { dialog = "preset" }
+                    Toggle(Icons.Outlined.Speed, stringResource(R.string.show_stats), stringResource(R.string.show_stats_desc), s.showStats) { v ->
+                        app.updateSettings { it.copy(showStats = v) }
+                    }
+                    Toggle(Icons.Outlined.StayCurrentLandscape, stringResource(R.string.auto_rotate), stringResource(R.string.auto_rotate_desc), s.autoRotate) { v ->
+                        app.updateSettings { it.copy(autoRotate = v) }
+                    }
+                }
+                SettingsCategory.AUDIO -> {
+                    Toggle(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.play_audio), stringResource(R.string.play_audio_desc), s.audio) { v ->
+                        app.updateSettings { it.copy(audio = v) }
+                    }
+                    Toggle(Icons.Outlined.Sync, stringResource(R.string.av_sync), stringResource(R.string.av_sync_desc), s.avSync) { v ->
+                        app.updateSettings { it.copy(avSync = v) }
+                    }
+                }
+                SettingsCategory.MOUSE_TOUCH -> {
+                    Item(Icons.Outlined.Gesture, stringResource(R.string.touch_mode), touchModeName(s.touchMode)) { dialog = "mode" }
+                    Toggle(Icons.Outlined.Mouse, stringResource(R.string.local_cursor), stringResource(R.string.local_cursor_desc), s.localCursor) { v ->
+                        app.updateSettings { it.copy(localCursor = v) }
+                    }
+                    SectionTitle(stringResource(R.string.scroll_section_mouse))
+                    Item(Icons.Outlined.Speed, stringResource(R.string.wheel_speed), stringResource(R.string.percent, s.wheelSpeed)) { dialog = "wheelSpeed" }
+                    Item(Icons.Outlined.Mouse, stringResource(R.string.wheel_mode), wheelModeName(s.wheelMode)) { dialog = "wheelMode" }
+                    Toggle(Icons.Outlined.Gesture, stringResource(R.string.smooth_wheel), stringResource(R.string.smooth_wheel_desc), s.smoothWheel) { v ->
+                        app.updateSettings { it.copy(smoothWheel = v) }
+                    }
+                    Toggle(Icons.Outlined.SwapVert, stringResource(R.string.reverse_wheel), stringResource(R.string.reverse_wheel_desc), s.reverseWheel) { v ->
+                        app.updateSettings { it.copy(reverseWheel = v) }
+                    }
+                    SectionTitle(stringResource(R.string.scroll_section_touch))
+                    Item(Icons.Outlined.TouchApp, stringResource(R.string.touch_scroll_speed), stringResource(R.string.percent, s.touchScrollSpeed)) { dialog = "touchScrollSpeed" }
+                    Toggle(Icons.Outlined.Gesture, stringResource(R.string.touch_scroll_fling), stringResource(R.string.touch_scroll_fling_desc), s.touchScrollFling) { v ->
+                        app.updateSettings { it.copy(touchScrollFling = v) }
+                    }
+                }
+                SettingsCategory.KEYBOARD -> {
+                    Toggle(Icons.Outlined.Keyboard, stringResource(R.string.double_tap_keyboard), stringResource(R.string.double_tap_keyboard_desc), s.doubleTapKeyboard) { v ->
+                        app.updateSettings { it.copy(doubleTapKeyboard = v) }
+                    }
+                }
+                SettingsCategory.ON_SCREEN_KEYS -> {
+                    Toggle(Icons.Outlined.Navigation, stringResource(R.string.nav_keys), stringResource(R.string.nav_keys_desc), s.navKeys) { v ->
+                        app.updateSettings { it.copy(navKeys = v) }
+                    }
+                    Text(
+                        stringResource(R.string.on_screen_keys_game_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 72.dp, end = 20.dp, top = 4.dp),
+                    )
+                }
+                SettingsCategory.NETWORK_DEVICE -> {
+                    SectionTitle(stringResource(R.string.settings_server))
+                    Item(Icons.Outlined.Dns, stringResource(R.string.server_address), s.server) { dialog = "server" }
+                    val learned = s.learnedFp
+                    Item(
+                        Icons.Outlined.VerifiedUser,
+                        stringResource(R.string.server_fingerprint),
+                        when {
+                            s.fingerprint.isNotBlank() -> s.fingerprint
+                            learned != null -> stringResource(R.string.fingerprint_learned, learned.take(16))
+                            else -> stringResource(R.string.fingerprint_none)
+                        },
+                    ) { dialog = "fingerprint" }
+                    Text(
+                        Messages.server(ctx, server),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 72.dp, end = 20.dp, bottom = 4.dp),
+                    )
 
-        SectionTitle(stringResource(R.string.settings_this_device))
-        Item(Icons.Outlined.Smartphone, stringResource(R.string.device_name), app.settings.deviceName()) { dialog = "name" }
-        val saved = host.code ?: app.hostCodes.load()?.code?.toString()
-        Item(
-            Icons.Outlined.Refresh,
-            stringResource(R.string.share_new_code),
-            if (saved != null) stringResource(R.string.settings_current_code, Code.format(saved)) else stringResource(R.string.settings_no_code),
-            enabled = saved != null,
-        ) { dialog = "newCode" }
-        // 配对过的设备：它们只用控制码就能连本机；忘掉之后要重新输入配对码
-        val paired = app.pairing.flow.collectAsState().value?.paired?.size ?: 0
-        Item(
-            Icons.Outlined.VerifiedUser,
-            stringResource(R.string.settings_paired),
-            if (paired > 0) pluralStringResource(R.plurals.settings_paired_count, paired, paired) else stringResource(R.string.settings_paired_none),
-            enabled = paired > 0,
-        ) { dialog = "forgetPaired" }
+                    SectionTitle(stringResource(R.string.settings_this_device))
+                    Item(Icons.Outlined.Smartphone, stringResource(R.string.device_name), app.settings.deviceName()) { dialog = "name" }
+                    val saved = host.code ?: app.hostCodes.load()?.code?.toString()
+                    Item(
+                        Icons.Outlined.Refresh,
+                        stringResource(R.string.share_new_code),
+                        if (saved != null) stringResource(R.string.settings_current_code, Code.format(saved)) else stringResource(R.string.settings_no_code),
+                        enabled = saved != null,
+                    ) { dialog = "newCode" }
+                    Item(
+                        Icons.Outlined.VerifiedUser,
+                        stringResource(R.string.settings_paired),
+                        if (paired > 0) pluralStringResource(R.plurals.settings_paired_count, paired, paired) else stringResource(R.string.settings_paired_none),
+                        enabled = paired > 0,
+                    ) { dialog = "forgetPaired" }
+                }
+                SettingsCategory.ABOUT -> {
+                    SectionTitle(stringResource(R.string.settings_data))
+                    Item(
+                        Icons.Outlined.DeleteSweep,
+                        stringResource(R.string.clear_devices),
+                        stringResource(R.string.clear_devices_desc, devices.size),
+                        enabled = devices.isNotEmpty(),
+                    ) { dialog = "clear" }
+                    Text(
+                        stringResource(R.string.data_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 72.dp, end = 20.dp, top = 4.dp),
+                    )
 
-        SectionTitle(stringResource(R.string.settings_remote))
-        Item(Icons.Outlined.HighQuality, stringResource(R.string.default_quality), presetName(Preset.of(s.preset))) { dialog = "preset" }
-        Item(Icons.Outlined.Gesture, stringResource(R.string.touch_mode), touchModeName(s.touchMode)) { dialog = "mode" }
-        Toggle(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.play_audio), stringResource(R.string.play_audio_desc), s.audio) { v ->
-            app.updateSettings { it.copy(audio = v) }
+                    SectionTitle(stringResource(R.string.settings_about))
+                    Item(Icons.Outlined.Info, stringResource(R.string.version), stringResource(R.string.version_value, BuildConfig.VERSION_NAME, Native.protocolVersion()))
+                    Item(
+                        Icons.Outlined.BugReport,
+                        stringResource(R.string.crash_log),
+                        if (crashes.count == 0) {
+                            stringResource(R.string.crash_log_none)
+                        } else {
+                            pluralStringResource(R.plurals.crash_log_count, crashes.count, crashes.count, Messages.ago(ctx, crashes.latest))
+                        },
+                        enabled = crashes.count > 0,
+                    ) { dialog = "crashLog" }
+                }
+            }
         }
-        Toggle(Icons.Outlined.Navigation, stringResource(R.string.nav_keys), stringResource(R.string.nav_keys_desc), s.navKeys) { v ->
-            app.updateSettings { it.copy(navKeys = v) }
-        }
-
-        // 与远程画面浮标菜单「控制设置」保持完全一致的分组与顺序
-        SectionTitle(stringResource(R.string.settings_display_interaction))
-        Toggle(Icons.Outlined.Speed, stringResource(R.string.show_stats), stringResource(R.string.show_stats_desc), s.showStats) { v ->
-            app.updateSettings { it.copy(showStats = v) }
-        }
-        Toggle(Icons.Outlined.StayCurrentLandscape, stringResource(R.string.auto_rotate), stringResource(R.string.auto_rotate_desc), s.autoRotate) { v ->
-            app.updateSettings { it.copy(autoRotate = v) }
-        }
-        Toggle(Icons.Outlined.Keyboard, stringResource(R.string.double_tap_keyboard), stringResource(R.string.double_tap_keyboard_desc), s.doubleTapKeyboard) { v ->
-            app.updateSettings { it.copy(doubleTapKeyboard = v) }
-        }
-        Toggle(Icons.Outlined.Mouse, stringResource(R.string.local_cursor), stringResource(R.string.local_cursor_desc), s.localCursor) { v ->
-            app.updateSettings { it.copy(localCursor = v) }
-        }
-        Toggle(Icons.Outlined.Sync, stringResource(R.string.av_sync), stringResource(R.string.av_sync_desc), s.avSync) { v ->
-            app.updateSettings { it.copy(avSync = v) }
-        }
-
-        SectionTitle(stringResource(R.string.scroll_section_mouse))
-        Item(Icons.Outlined.Speed, stringResource(R.string.wheel_speed), stringResource(R.string.percent, s.wheelSpeed)) { dialog = "wheelSpeed" }
-        Item(Icons.Outlined.Mouse, stringResource(R.string.wheel_mode), wheelModeName(s.wheelMode)) { dialog = "wheelMode" }
-        Toggle(Icons.Outlined.Gesture, stringResource(R.string.smooth_wheel), stringResource(R.string.smooth_wheel_desc), s.smoothWheel) { v ->
-            app.updateSettings { it.copy(smoothWheel = v) }
-        }
-        Toggle(Icons.Outlined.SwapVert, stringResource(R.string.reverse_wheel), stringResource(R.string.reverse_wheel_desc), s.reverseWheel) { v ->
-            app.updateSettings { it.copy(reverseWheel = v) }
-        }
-
-        SectionTitle(stringResource(R.string.scroll_section_touch))
-        Item(Icons.Outlined.TouchApp, stringResource(R.string.touch_scroll_speed), stringResource(R.string.percent, s.touchScrollSpeed)) { dialog = "touchScrollSpeed" }
-        Toggle(Icons.Outlined.Gesture, stringResource(R.string.touch_scroll_fling), stringResource(R.string.touch_scroll_fling_desc), s.touchScrollFling) { v ->
-            app.updateSettings { it.copy(touchScrollFling = v) }
-        }
-
-        SectionTitle(stringResource(R.string.settings_data))
-        Item(
-            Icons.Outlined.DeleteSweep,
-            stringResource(R.string.clear_devices),
-            stringResource(R.string.clear_devices_desc, devices.size),
-            enabled = devices.isNotEmpty(),
-        ) { dialog = "clear" }
-        Text(
-            stringResource(R.string.data_note),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 72.dp, end = 20.dp, top = 4.dp),
-        )
-
-        SectionTitle(stringResource(R.string.settings_about))
-        Item(Icons.Outlined.Info, stringResource(R.string.version), stringResource(R.string.version_value, BuildConfig.VERSION_NAME, Native.protocolVersion()))
-        // 闪退、无响应时记下的（见 CrashLog）：复制 / 分享给开发者
-        val crashes by CrashLog.summary.collectAsState()
-        Item(
-            Icons.Outlined.BugReport,
-            stringResource(R.string.crash_log),
-            if (crashes.count == 0) {
-                stringResource(R.string.crash_log_none)
-            } else {
-                pluralStringResource(R.plurals.crash_log_count, crashes.count, crashes.count, Messages.ago(ctx, crashes.latest))
-            },
-            enabled = crashes.count > 0,
-        ) { dialog = "crashLog" }
         Spacer(Modifier.height(8.dp))
     }
 
@@ -454,6 +550,21 @@ fun validServer(v: String): Boolean {
     if (port !in 1..65535) return false
     if (host.any { it.isWhitespace() }) return false
     return host.startsWith("[") == host.endsWith("]") && (host.startsWith("[") || !host.contains(':'))
+}
+
+@Composable
+private fun CategoryRow(icon: ImageVector, title: String, summary: String, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title, style = MaterialTheme.typography.titleSmall) },
+        supportingContent = { Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        leadingContent = { Icon(icon, null, tint = MaterialTheme.colorScheme.primary) },
+        trailingContent = { Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+    )
 }
 
 @Composable
