@@ -123,7 +123,11 @@ int ah_vd_mode(uint32_t display, uint32_t out[4]) {
     return 1;
 }
 
-static CGError apply_display_mode(uint32_t display, CGDisplayModeRef mode, CGConfigureOption option) {
+// How long a detour mode stays before switching to the wanted one (see ah_vd_set_mode; 50 ms was enough in testing)
+static const useconds_t DETOUR_WAIT_US = 100000;
+
+// Switch `display` to `mode`, remembered by macOS or for this login session only (`option`). Returns a CGError.
+static CGError configure_mode(uint32_t display, CGDisplayModeRef mode, CGConfigureOption option) {
     CGDisplayConfigRef config;
     CGError error = CGBeginDisplayConfiguration(&config);
     if (error) return error;
@@ -135,12 +139,15 @@ static CGError apply_display_mode(uint32_t display, CGDisplayModeRef mode, CGCon
     return CGCompleteDisplayConfiguration(config, option);
 }
 
-static BOOL mode_matches(CGDisplayModeRef mode, uint32_t width, uint32_t height,
-                         uint32_t pixel_width, uint32_t pixel_height) {
-    return mode &&
-           CGDisplayModeGetWidth(mode) == width &&
-           CGDisplayModeGetHeight(mode) == height &&
-           CGDisplayModeGetPixelWidth(mode) == pixel_width &&
+// `mode` is `width` x `height` points
+static int has_points(CGDisplayModeRef mode, uint32_t width, uint32_t height) {
+    return CGDisplayModeGetWidth(mode) == width && CGDisplayModeGetHeight(mode) == height;
+}
+
+// `mode` is `width` x `height` points and `pixel_width` x `pixel_height` pixels
+static int is_mode(CGDisplayModeRef mode, uint32_t width, uint32_t height, uint32_t pixel_width,
+                   uint32_t pixel_height) {
+    return has_points(mode, width, height) && CGDisplayModeGetPixelWidth(mode) == pixel_width &&
            CGDisplayModeGetPixelHeight(mode) == pixel_height;
 }
 
@@ -148,59 +155,41 @@ static BOOL mode_matches(CGDisplayModeRef mode, uint32_t width, uint32_t height,
 // resolution twins of HiDPI modes included), remembered by macOS: the next time this display is in the same set of
 // displays, macOS picks this mode again. Returns a CGError, kCGErrorIllegalArgument if there's no such mode.
 //
-// On some macOS versions (e.g. macOS 15.6 clamshell unmirror with stale 1x1 UnmirrorInfo), WindowServer drops the
-// virtual display into mode 0 (e.g. 800x520 1x) while still treating its prior/desired mode as `wanted`. A direct
-// modeset to `wanted` then becomes a no-op ("desired mode change N -> N / No change between prior and requested
-// configuration"). When the direct switch leaves the display on a different mode, bounce through a different usable
-// mode (preferring the same point size so windows don't move) to force WindowServer to really apply `wanted`.
+// WindowServer may skip the switch. Issue #40 (macOS 15.6): the virtual display, taken out of the mirror set when the
+// lid closed, was put in its mode 0 (800x520 1x; the mode remembered for leaving the mirror set was an invalid 1x1),
+// while WindowServer still had the wanted mode down as the current one, so switching to it was "desired mode change
+// 9 -> 9", "No change between prior and requested configuration". So if the display isn't in the wanted mode
+// afterwards, it goes through another mode first (for this login session only), then to the wanted one: one of the
+// same size in points (the 1x twin of a HiDPI mode or the other way round: windows stay where they are; this is what
+// fixed it on that Mac), or else the mode it's actually in (nothing changes on the screen). Never a mode of another
+// size: macOS would squeeze the windows into it and leave them like that.
 int ah_vd_set_mode(uint32_t display, uint32_t width, uint32_t height, uint32_t pixel_width, uint32_t pixel_height) {
     @autoreleasepool {
         NSDictionary *options = @{(__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes : @YES};
         CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)options);
         if (!modes) return kCGErrorIllegalArgument;
-        CFIndex count = CFArrayGetCount(modes);
-        CGDisplayModeRef wanted = NULL;
-        for (CFIndex i = 0; i < count && !wanted; i++) {
+        CGDisplayModeRef wanted = NULL, twin = NULL;
+        for (CFIndex i = 0; i < CFArrayGetCount(modes); i++) {
             CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-            if (mode_matches(mode, width, height, pixel_width, pixel_height) &&
-                CGDisplayModeIsUsableForDesktopGUI(mode))
-                wanted = mode;
+            if (!CGDisplayModeIsUsableForDesktopGUI(mode)) continue;
+            if (is_mode(mode, width, height, pixel_width, pixel_height)) {
+                if (!wanted) wanted = mode;
+            } else if (!twin && has_points(mode, width, height)) {
+                twin = mode;
+            }
         }
         CGError error = kCGErrorIllegalArgument;
         if (wanted) {
-            error = apply_display_mode(display, wanted, kCGConfigurePermanently);
-            if (!error) {
-                CGDisplayModeRef cur = CGDisplayCopyDisplayMode(display);
-                if (!mode_matches(cur, width, height, pixel_width, pixel_height)) {
-                    int32_t wanted_id = CGDisplayModeGetIODisplayModeID(wanted);
-                    int32_t cur_id = cur ? CGDisplayModeGetIODisplayModeID(cur) : -1;
-                    CGDisplayModeRef same_points = NULL;
-                    CGDisplayModeRef fallback = NULL;
-                    for (CFIndex i = 0; i < count; i++) {
-                        CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
-                        if (!CGDisplayModeIsUsableForDesktopGUI(mode)) continue;
-                        int32_t mode_id = CGDisplayModeGetIODisplayModeID(mode);
-                        if (mode_id == wanted_id || (cur && mode_id == cur_id) ||
-                            mode_matches(mode, width, height, pixel_width, pixel_height))
-                            continue;
-                        if (!same_points && CGDisplayModeGetWidth(mode) == width &&
-                            CGDisplayModeGetHeight(mode) == height) {
-                            same_points = mode;
-                            break;
-                        }
-                        if (!fallback) fallback = mode;
-                    }
-                    CGDisplayModeRef detour = same_points ? same_points : fallback;
-                    if (detour) {
-                        error = apply_display_mode(display, detour, kCGConfigureForSession);
-                        if (!error) {
-                            usleep(50000);
-                            error = apply_display_mode(display, wanted, kCGConfigurePermanently);
-                        }
-                    }
+            error = configure_mode(display, wanted, kCGConfigurePermanently);
+            CGDisplayModeRef now = error ? NULL : CGDisplayCopyDisplayMode(display);
+            if (now && !is_mode(now, width, height, pixel_width, pixel_height)) {
+                error = configure_mode(display, twin ? twin : now, kCGConfigureForSession);
+                if (!error) {
+                    usleep(DETOUR_WAIT_US);
+                    error = configure_mode(display, wanted, kCGConfigurePermanently);
                 }
-                if (cur) CGDisplayModeRelease(cur);
             }
+            if (now) CGDisplayModeRelease(now);
         }
         CFRelease(modes);
         return error;

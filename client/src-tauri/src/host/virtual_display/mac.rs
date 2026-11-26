@@ -29,12 +29,21 @@
 //!   分辨率，镜像着它时本机改的只记在那一套里），本机刚改的分辨率就被改回去，开着"不自动睡眠"时等于改不了。也不
 //!   原地换模式（`applySettings`）：在镜像里换过，内建的显示器会一直撕裂（实测）。同样的原因，撤掉它的时候
 //!   （会话结束、用着电池、退出）镜像着它时本机改的分辨率会被系统换回去，和以前一样；
-//! * **自己在（合上了盖子、补着屏）的时候看着它的模式**：系统按“接着哪几块显示器”记着每块显示器用的模式，它的身份
-//!   一直不变，合上盖子时系统换上的是记着的，不是建它时说的；HiDPI 的虚拟显示器系统还给出同样点数的 1x 模式
-//!   （“低分辨率”）。记着的是 1x 的（例如以前照 1080p 非 HiDPI 建过），合上盖子之后画面就糊了：大小没变，只有一半的
-//!   清晰度（issue #40，实测：把它设成 1x 之后撤掉重建，照 HiDPI 建的照样是 1x）。所以它自己在了一会儿（[`SETTLE`]，
-//!   等系统换完）之后看一眼，不是建它时的模式就换回去，系统也记住（下次合上盖子直接就是它）；换不回去的话显示器
-//!   列表里照它现在的像素大小（照实际的采集，不放大）。合着盖子时在系统设置里给它换的分辨率，下次合上盖子也换回去；
+//! * **自己在（合上了盖子、补着屏）的时候看着它的模式**（issue #40）：系统按“接着哪几块显示器”记着每块显示器用的
+//!   模式，它的身份一直不变，合上盖子时系统换上的是记着的，不是建它时说的；系统还给它加了别的模式：同样点数的 1x
+//!   （HiDPI 的“低分辨率”版）和一串更小的 1x。记着的不对，合上盖子之后画面就糊了：
+//!   - 记着的是 1x（例如以前照 1080p 非 HiDPI 建过）：大小没变，只有一半的清晰度（实测：把它设成 1x 之后撤掉重建，
+//!     照 HiDPI 建的照样是 1x）；
+//!   - 记着的“退出镜像时用的模式”（`UnmirrorInfo`）是坏的 1x1：系统退回它的第一个模式（反馈者的 macOS 15.6 上是
+//!     800x520 1x），自己却记着已经是建它时的那个，直接换过去被当成没变、跳过（见 `mac.m` 的 `ah_vd_set_mode`）。
+//!
+//!   所以它自己在的时候查它的模式（[`ModeWatch`]，子进程做，见下面）：自己在了 [`MODE_FIRST`] 先查一次（系统拿出
+//!   镜像、换上记着的模式是一起做的），之后每 [`SETTLE`] 再查，直到自己在了 [`SETTLE`] 以上查到的就是建它时的模式
+//!   （系统换完了，换过去的也没被换回来），最多 [`MODE_CHECKS`] 次。不是建它时的就换回去，系统也记住（下次合上盖子
+//!   直接就是它）；系统跳过不换的话先绕一下同样点数的另一个模式（窗口不动）；又放回了镜像（刚打开盖子）就不换。
+//!   模式变过的话，之前打开的采集重开（[`mode_generation`]：已经打开的 ScreenCaptureKit 流停在旧的缩放比例上，
+//!   换回 HiDPI 也照样糊），会话重新列出显示器；换不回去的话显示器列表里照它现在的像素大小（照实际的采集，不放大）。
+//!   合着盖子时在系统设置里给它换的分辨率，下次合上盖子也换回去；
 //! * 合上、打开盖子，主显示器换了：马上告诉会话，重新列出显示器；
 //! * 有虚拟显示器的时候要着 `PreventSystemSleep`（[`power::keep_running`]）：接着外接电源时合着盖子也不睡眠
 //!   （有会话期间本来就要着，见 `power`；这个管最后一个会话结束后等重连的那一会儿）；
@@ -74,8 +83,11 @@ const WATCH_READY: Duration = Duration::from_secs(2);
 /// 本机的显示器回来了这么久才撤掉虚拟显示器、打开盖子之后这么久还没回到镜像才自己放回去（开盖、合盖的过程中
 /// 显示器会来回变）
 const SETTLE: Duration = Duration::from_secs(2);
-/// 合盖后虚拟显示器已经退出镜像独立工作：稍等 WindowServer 完成切换就检查并切回 HiDPI（缩短合盖后的模糊等待）
-const MODE_SETTLE: Duration = Duration::from_millis(500);
+/// 虚拟显示器自己在了这么久之后第一次查它的模式（见 [`ModeWatch`]）：系统拿出镜像、换上记着的模式是一起做的，
+/// 不用等它；查早了也没事，之后还会再查
+const MODE_FIRST: Duration = Duration::from_millis(500);
+/// 虚拟显示器每次自己在的时候最多查这么多次模式（见 [`ModeWatch`]）：一次 0.4 秒左右，换不过去的话每次还要闪一下
+const MODE_CHECKS: u32 = 4;
 /// 多久看一次用的是不是外接电源
 const AC_CHECK: Duration = Duration::from_secs(5);
 /// 建不出来的话过这么久再试
@@ -146,17 +158,17 @@ pub(super) fn usable() -> bool {
 /// 现在的虚拟显示器：编号、像素大小
 static CURRENT: Mutex<Option<(CGDirectDisplayID, u32, u32)>> = Mutex::new(None);
 
-/// 补屏的虚拟显示器换过显示模式就加一：已打开的 ScreenCaptureKit 采集流可能还停在旧的缩放比例（如 1x），
-/// 见 `capture::sck`
-static MODE_GEN: AtomicU64 = AtomicU64::new(0);
-
-/// 补屏的虚拟显示器换过显示模式的次数
-pub(super) fn mode_generation() -> u64 {
-    MODE_GEN.load(Ordering::Acquire)
-}
-
 /// 最近看到的本机主显示器的样子（见模块说明）：管理线程退出了也记着，合着盖子时再启动也照着它建
 static SEEN: Mutex<Option<Shape>> = Mutex::new(None);
+
+/// 虚拟显示器的模式变过（子进程换过，或者两次查到的不一样）就加一，见 [`mode_generation`]
+static MODE_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// 虚拟显示器的模式变过就加一：在这之前打开的、采集它的 ScreenCaptureKit 流停在旧的缩放比例上（例如换回了 HiDPI，
+/// 流还是 1x 的糊画面），要重新打开（见 `capture::sck`）。本进程读不到它的模式（见模块说明），只有管理线程知道
+pub(super) fn mode_generation() -> u64 {
+    MODE_GEN.load(Ordering::Relaxed)
+}
 
 /// 本进程现在的虚拟显示器（防窥时不调黑、不盖它，见 [`super::curtain`]）
 pub(super) fn current() -> Option<CGDirectDisplayID> {
@@ -377,7 +389,10 @@ fn helper(args: &[String]) -> i32 {
         eprintln!("can't read the mode of display {id}");
         return 2;
     };
-    if before != want {
+    // 又放回了镜像（刚打开了盖子）：不换，在镜像里换模式内建的显示器会一直撕裂（见模块说明）
+    if before != want && CGDisplayMirrorsDisplay(id) != 0 {
+        eprintln!("display {id} is in a mirror set: not switching it");
+    } else if before != want {
         let r = unsafe { ah_vd_set_mode(id, w, h, pw, ph) };
         if r != 0 {
             eprintln!("can't switch display {id} to {want}: CGError {r}");
@@ -492,31 +507,87 @@ fn check_mode(id: CGDirectDisplayID, want: Mode) -> Result<(Mode, Mode)> {
     }
 }
 
-/// 虚拟显示器自己在（合上了盖子、补着屏）：系统换上的是它记着的模式，不是建它时的就换回去（见模块说明）；
-/// 换不回去的话显示器列表里照它现在的像素大小
-fn follow_mode(vd: &VirtualDisplay) {
-    let want = vd.shape.mode();
-    let (before, after) = match check_mode(vd.id, want) {
-        Ok(modes) => modes,
-        Err(e) => {
-            warn!(id = vd.id, "can't check the virtual display's mode: {e:#}");
-            return;
+/// 虚拟显示器自己在（合上了盖子、补着屏）的这一段里什么时候查它的模式（见模块说明）：自己在了 [`MODE_FIRST`]
+/// 先查一次，之后每 [`SETTLE`] 再查，直到自己在了 [`SETTLE`] 以上时查到的就是要的模式，最多 [`MODE_CHECKS`] 次
+#[derive(Debug)]
+struct ModeWatch {
+    /// 哪一块
+    id: CGDirectDisplayID,
+    /// 从什么时候起自己在
+    since: Instant,
+    /// 下次什么时候查；`None`：这一段不再查了
+    next: Option<Instant>,
+    /// 查了几次
+    checks: u32,
+    /// 上次查完时它的模式
+    last: Option<Mode>,
+}
+
+impl ModeWatch {
+    fn new(id: CGDirectDisplayID, now: Instant) -> Self {
+        Self {
+            id,
+            since: now,
+            next: Some(now + MODE_FIRST),
+            checks: 0,
+            last: None,
         }
+    }
+
+    /// 该查了
+    fn due(&self, now: Instant) -> bool {
+        self.next.is_some_and(|t| now >= t)
+    }
+
+    /// 在 `now` 查完了：`modes` 是子进程看到的之前、之后的模式（查不了为 `None`），`want` 是要的。返回它的模式
+    /// 变过没有（子进程换过，或者和上次查完时不一样）：变过的话在这之前打开的采集要重开
+    fn checked(&mut self, now: Instant, want: Mode, modes: Option<(Mode, Mode)>) -> bool {
+        self.checks += 1;
+        let Some((before, after)) = modes else {
+            self.next = (self.checks < MODE_CHECKS).then(|| now + SETTLE);
+            return false;
+        };
+        let changed = before != after || self.last.is_some_and(|m| m != before);
+        self.last = Some(after);
+        // 系统换完了（自己在了一会儿），要的模式也没被换掉：这一段不用再查
+        let settled = before == want && now.duration_since(self.since) >= SETTLE;
+        self.next = (!settled && self.checks < MODE_CHECKS).then(|| now + SETTLE);
+        changed
+    }
+}
+
+/// 查一次虚拟显示器的模式（见 [`ModeWatch`]、模块说明）：不是建它时的就换回去。显示器列表里照它现在的像素大小；
+/// 模式变过的话重开采集它的流、会话重新列出显示器
+fn follow_mode(vd: &VirtualDisplay, watch: &mut ModeWatch) {
+    let want = vd.shape.mode();
+    let modes = check_mode(vd.id, want)
+        .inspect_err(|e| warn!(id = vd.id, "can't check the virtual display's mode: {e:#}"))
+        .ok();
+    let changed = watch.checked(Instant::now(), want, modes);
+    let Some((before, after)) = modes else {
+        return;
     };
+    let check = watch.checks;
     if after == want {
-        info!(id = vd.id, %before, mode = %after, "virtual display mode");
+        info!(id = vd.id, %before, mode = %after, check, "virtual display mode");
     } else {
         warn!(
             id = vd.id,
             %before,
             mode = %after,
             wanted = %want,
+            check,
             "the virtual display keeps a mode it wasn't created with: capturing it as it is"
         );
     }
-    // 显示器列表里的像素大小照现在的；模式换了，重开采集（ScreenCaptureKit 可能还停在 1x）并让会话重新列出显示器
-    if set_pixels(vd.id, after.pixels) || before != after {
-        MODE_GEN.fetch_add(1, Ordering::AcqRel);
+    // 查了 MODE_CHECKS 次还不对：这一段照它现在的采集
+    if watch.next.is_none() && before != want {
+        warn!(id = vd.id, check, "gave up on the virtual display's mode");
+    }
+    if changed {
+        MODE_GEN.fetch_add(1, Ordering::Relaxed);
+    }
+    if set_pixels(vd.id, after.pixels) || changed {
         bump();
     }
 }
@@ -596,8 +667,8 @@ fn run() {
     let mut ac = (true, None::<Instant>);
     // 预备着的虚拟显示器从什么时候起没在镜像（开着盖子时）
     let mut unmirrored_since: Option<Instant> = None;
-    // 虚拟显示器自己在的时候查它的模式（见 `follow_mode`）：哪一块、什么时候查（`None`：这次查过了）
-    let mut mode_check: Option<(CGDirectDisplayID, Option<Instant>)> = None;
+    // 虚拟显示器自己在的时候查它的模式（见 `ModeWatch`）；不是自己在的时候为 `None`
+    let mut mode_watch: Option<ModeWatch> = None;
     loop {
         let now = Instant::now();
         let (sessions, ready, stopping, privacy) = {
@@ -737,20 +808,23 @@ fn run() {
             },
             _ => {}
         }
-        // 自己在（合上了盖子、补着屏，不在镜像里）：系统换上的是它记着的模式。等系统换完了看一眼，每次自己在的时候
-        // 一次（见模块说明）
+        // 自己在（合上了盖子、补着屏，不在镜像里）：系统换上的是它记着的模式，查一查（见模块说明）。开着盖子预备着
+        // 的时候不查、不换：在镜像里换模式内建的显示器会一直撕裂
         let alone = filling
             .as_ref()
             .filter(|f| standby.is_none() && CGDisplayMirrorsDisplay(f.display.id) == 0);
-        match (alone, mode_check) {
-            (None, _) => mode_check = None,
-            (Some(f), Some((id, due))) if id == f.display.id => {
-                if due.is_some_and(|t| now >= t) {
-                    mode_check = Some((id, None));
-                    follow_mode(&f.display);
+        match alone {
+            None => mode_watch = None,
+            Some(f) => {
+                if mode_watch.as_ref().is_none_or(|w| w.id != f.display.id) {
+                    mode_watch = Some(ModeWatch::new(f.display.id, now));
+                }
+                if let Some(w) = mode_watch.as_mut()
+                    && w.due(now)
+                {
+                    follow_mode(&f.display, w);
                 }
             }
-            (Some(f), _) => mode_check = Some((f.display.id, Some(now + MODE_SETTLE))),
         }
         if filling.is_none() && curtain.is_none() {
             // 没事可做了：退出（下一个会话加入、打开"不自动睡眠"时再启动）。台式机上预备不用管。
@@ -767,17 +841,19 @@ fn run() {
             }
         }
         let starting = curtain.as_ref().is_some_and(|(c, _)| !c.ready());
-        let mut period = if starting {
+        let period = if starting {
             STARTING
         } else if sessions || curtain.is_some() {
             WATCH
         } else {
             WATCH_READY
         };
-        if let Some((_, Some(due))) = mode_check {
-            period = period.min(due.saturating_duration_since(Instant::now()));
-        }
-        wait(period);
+        // 到了该查模式的时候就醒，不多等一轮（没有会话时一轮是 2 秒）
+        let mode_due = mode_watch
+            .as_ref()
+            .and_then(|w| w.next)
+            .map(|t| t.saturating_duration_since(Instant::now()));
+        wait(mode_due.map_or(period, |d| d.min(period)));
     }
     info!("virtual display manager stopped");
 }
@@ -835,6 +911,88 @@ mod tests {
         assert_eq!(parse_report(&format!("{REPORT} 1 2 3 4 5 6 7")), None);
         assert_eq!(parse_report(&format!("{REPORT} 1 2 3 4 5 6 7 x")), None);
         assert_eq!(low.to_string(), "1512x982 (1512x982 px)");
+    }
+
+    const HIDPI: Mode = Mode {
+        points: (1470, 956),
+        pixels: (2940, 1912),
+    };
+    const LOW: Mode = Mode {
+        points: (1470, 956),
+        pixels: (1470, 956),
+    };
+    /// issue #40：系统退回的第一个模式
+    const FIRST: Mode = Mode {
+        points: (800, 520),
+        pixels: (800, 520),
+    };
+
+    /// 在 `watch.since` 之后 `at` 查完
+    fn check(watch: &mut ModeWatch, at: Duration, modes: Option<(Mode, Mode)>) -> bool {
+        watch.checked(watch.since + at, HIDPI, modes)
+    }
+
+    fn ms(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    /// 合上盖子时系统换上了别的模式：马上换回来、重开采集，过一会儿再看一眼没被换掉就不再查
+    #[test]
+    fn switches_back_then_confirms() {
+        let since = Instant::now();
+        let mut w = ModeWatch::new(7, since);
+        assert!(!w.due(since + ms(499)));
+        assert!(w.due(since + MODE_FIRST));
+        assert!(
+            check(&mut w, ms(900), Some((FIRST, HIDPI))),
+            "换过，要重开采集"
+        );
+        assert_eq!(w.next, Some(since + ms(900) + SETTLE));
+        assert!(!check(&mut w, ms(3300), Some((HIDPI, HIDPI))));
+        assert_eq!(w.next, None);
+        assert_eq!(w.checks, 2);
+    }
+
+    /// 系统换上的就是要的：自己在了一会儿之后再确认一次（第一次可能查早了）
+    #[test]
+    fn confirms_once_settled() {
+        let since = Instant::now();
+        let mut w = ModeWatch::new(7, since);
+        assert!(!check(&mut w, ms(900), Some((HIDPI, HIDPI))));
+        assert!(w.next.is_some(), "还没过 SETTLE：再看一眼");
+        // 查早了：系统之后才换上记着的 1x
+        assert!(check(&mut w, ms(3300), Some((LOW, HIDPI))));
+        assert!(w.next.is_some(), "换过：再看一眼");
+        assert!(!check(&mut w, ms(5700), Some((HIDPI, HIDPI))));
+        assert_eq!(w.next, None);
+    }
+
+    /// 两次之间系统自己换了模式：之前打开的采集也要重开
+    #[test]
+    fn notices_changes_between_checks() {
+        let since = Instant::now();
+        let mut w = ModeWatch::new(7, since);
+        // 换不过去，照它现在的采集
+        assert!(!check(&mut w, ms(900), Some((LOW, LOW))));
+        assert!(
+            check(&mut w, ms(3300), Some((HIDPI, HIDPI))),
+            "系统自己换了"
+        );
+        assert_eq!(w.next, None);
+    }
+
+    /// 一直换不过去、子进程出错：最多查 MODE_CHECKS 次
+    #[test]
+    fn gives_up_after_a_few_checks() {
+        let since = Instant::now();
+        let mut w = ModeWatch::new(7, since);
+        let mut at = MODE_FIRST;
+        for i in 1..=MODE_CHECKS {
+            let modes = (i != 2).then_some((LOW, LOW));
+            check(&mut w, at, modes);
+            assert_eq!(w.next.is_some(), i < MODE_CHECKS, "第 {i} 次");
+            at += SETTLE;
+        }
     }
 
     /// 照着本机的显示器：Retina 屏用 HiDPI（点），普通屏用像素；读不出物理尺寸时按 110 PPI 估

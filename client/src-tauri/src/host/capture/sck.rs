@@ -141,8 +141,9 @@ pub struct SckCapturer {
     shows_cursor: bool,
     /// 打开时防窥的黑窗口是哪一版（见 [`virtual_display::cover_generation`]）：变了就重建采集器
     covers: u64,
-    /// 打开时补屏的虚拟显示器的模式是哪一版（见 [`virtual_display::mode_generation`]）：换过模式就重建采集器
-    vd_mode: u64,
+    /// 采集的是补屏的虚拟显示器的话，打开时它的模式是哪一版（见 [`virtual_display::mode_generation`]）：变了就
+    /// 重建采集器（打开着的流停在旧的缩放比例上，换回了 HiDPI 也还是 1x 的糊画面）
+    vd_mode: Option<u64>,
 }
 
 fn frame_interval(fps: u8) -> CMTime {
@@ -168,7 +169,8 @@ impl SckCapturer {
         let locked = macos::screen_locked();
         // 先记下是哪一版再取窗口：取完之后又变了的话，下一帧就会发现
         let covers = virtual_display::cover_generation();
-        let vd_mode = virtual_display::mode_generation();
+        let vd_mode =
+            virtual_display::pixels(display.id).map(|_| virtual_display::mode_generation());
         let target = sck::shareable_display(display.id, &virtual_display::cover_windows())?;
         let (w, h) = crate::host::encoder::target_size(display.width, display.height, max_short);
         let config = unsafe {
@@ -274,8 +276,11 @@ impl Capturer for SckCapturer {
         if virtual_display::cover_generation() != self.covers {
             bail!("the privacy mode's black windows changed");
         }
-        // 补屏的虚拟显示器刚换过模式：已打开的流可能还停在旧的缩放比例（如 1x），重新打开采集
-        if virtual_display::mode_generation() != self.vd_mode {
+        // 虚拟显示器的模式变了（合上盖子之后换回了 HiDPI）：这个流还是照旧的缩放比例采
+        if self
+            .vd_mode
+            .is_some_and(|g| g != virtual_display::mode_generation())
+        {
             bail!("the virtual display's mode changed");
         }
         if self.layout_checked.elapsed() > LAYOUT_CHECK {
