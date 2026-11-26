@@ -236,6 +236,11 @@ fn build_menu(app: &AppHandle, st: &AppStatus) -> tauri::Result<Menu<Wry>> {
             None::<&str>,
         )?)?;
     }
+    // 禁用 AWDL（macOS，见 crate::awdl）：开关后直接附带 awdl0 接口的实时文字状态
+    #[cfg(target_os = "macos")]
+    if let Some(s) = st.awdl {
+        menu.append(&awdl_entry(app, s)?)?;
+    }
     #[cfg(target_os = "macos")]
     {
         let (id, title, enabled) = crate::clipfiles::macos::menu_item();
@@ -327,6 +332,32 @@ fn login_item_entry(
         text,
         s != State::NotInstalled,
         s == State::On,
+        None::<&str>,
+    )
+}
+
+/// macOS：禁用 AWDL（`awdl0`）低延迟开关，并在开关文字后面实时显示 `awdl0` 状态
+#[cfg(target_os = "macos")]
+fn awdl_entry(app: &AppHandle, s: crate::awdl::State) -> tauri::Result<CheckMenuItem<Wry>> {
+    use crate::awdl::LinkState;
+    let text = if s.busy {
+        tr!("禁用 AWDL（正在切换…）", "Disable AWDL (updating…)")
+    } else {
+        match s.link {
+            LinkState::Down => tr!("禁用 AWDL（awdl0：已关闭）", "Disable AWDL (awdl0: off)"),
+            LinkState::Active => tr!("禁用 AWDL（awdl0：已开启）", "Disable AWDL (awdl0: on)"),
+            LinkState::Unavailable => {
+                tr!("禁用 AWDL（未检测到 awdl0）", "Disable AWDL (no awdl0)")
+            }
+        }
+    };
+    let enabled = !s.busy && (s.link != LinkState::Unavailable || s.daemon_installed);
+    CheckMenuItem::with_id(
+        app,
+        "toggle_awdl",
+        text,
+        enabled,
+        s.daemon_installed,
         None::<&str>,
     )
 }
