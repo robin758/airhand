@@ -5,7 +5,26 @@
 
 ---
 
-## `0.4.1-rc.7`（2026-11-26）
+## `0.4.1-rc.8`（2026-11-26）
+
+### 新增功能（macOS 个人 Fork 专属）
+1. **macOS 托盘菜单新增「禁用 AWDL」开关 + `awdl0` 实时状态反馈**
+   - 位置：菜单栏托盘中紧跟在「不自动睡眠」下方，**默认关闭**，文字直接反馈网卡状态：`禁用 AWDL（awdl0：已开启 / 已关闭）`（切换授权期间显示「正在切换…」并防重复点击）。
+   - **开机持久生效、零进程负担**：开启时经 macOS 原生管理员授权框安装系统 `LaunchDaemon`（`/Library/LaunchDaemons/app.airhand.disable-awdl.plist` 与 `/Library/Application Support/Airhand/disable-awdl.sh`），每 5 秒仅在 `awdl0` 被系统拉起为 `UP` 时执行 `ifconfig awdl0 down`；重启或休眠唤醒后依然生效。
+   - **零内存泄漏 / 零子进程轮询**：Airhand 主进程不常驻额外后台循环，实时状态直接复用现有 2 秒托盘监听并通过 `libc::getifaddrs` 系统调用读取 `awdl0` 的 `IFF_UP` 标志（RAII 自动释放 `freeifaddrs`）。
+   - **卸载自动还原**：使用菜单栏「卸载 Airhand…」时，若安装过该守护服务，会自动移除 `LaunchDaemon` 与脚本并执行 `ifconfig awdl0 up` 恢复隔空投送等功能；若从未开启则不额外弹管理员授权框。
+
+### 改动位置
+- `client/src-tauri/src/awdl.rs`（新增）：实现 `getifaddrs` 状态查询、基于 `osascript` 的安装/卸载 `LaunchDaemon`、防重复点击锁与单元测试
+- `client/src-tauri/src/status.rs`：`AppStatus` 新增 macOS 专属 `awdl` 状态字段
+- `client/src-tauri/src/tray.rs`：托盘菜单新增「禁用 AWDL（awdl0：已开启 / 已关闭）」勾选项与中英文文案
+- `client/src-tauri/src/lib.rs`：接入启动初查、2 秒实时状态刷新与 `"toggle_awdl"` 异步切换处理
+- `client/src-tauri/src/uninstall.rs`：卸载确认提示与清理步骤自动移除 AWDL 守护服务并恢复 `awdl0`
+- `.github/workflows/build-dmg-apk.yml`：默认版本号更新至 `0.4.1-rc.8`
+
+---
+
+## `0.4.1-rc.7`（2026-11-26，提交 `d42c417`）
 
 ### 界面结构重构（首页设置 & 会话悬浮窗统一大分类）
 1. **首页「设置」升级为 7 个一级大分类导航 + 二级详情页**

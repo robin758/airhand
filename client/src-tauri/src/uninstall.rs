@@ -41,10 +41,17 @@ pub fn confirm(mtm: MainThreadMarker) -> bool {
         "卸载 Airhand？",
         "Uninstall Airhand?"
     )));
-    alert.setInformativeText(&NSString::from_str(&tr!(
+    let mut info = tr!(
         "会移除 Airhand 虚拟麦克风，关掉登录时自动启动，清除 Airhand 的“屏幕与系统录音”“辅助功能”等权限，删除配置文件（本机的控制码、“我的设备”里保存的电脑）和系统为它生成的缓存、记下的菜单栏图标设置，然后把 Airhand 移到废纸篓并退出。\n\n正在控制本机的连接会断开。已接收的文件会保留。",
         "This removes Airhand Microphone, turns off open at login, clears Airhand's permissions (Screen & System Audio Recording, Accessibility and so on), deletes the configuration file (this computer's control code and the computers saved in My devices) and the caches and menu bar icon settings macOS keeps for it, then moves Airhand to the Trash and quits.\n\nAnyone controlling this computer will be disconnected. Files you have received will be kept."
-    )));
+    );
+    if crate::awdl::is_installed() {
+        info.push_str(&tr!(
+            "\n\n还会移除禁用 AWDL 的系统服务并恢复 awdl0（将请求一次管理员权限）。",
+            "\n\nThis will also remove the AWDL disable service and restore awdl0 (requires administrator approval once)."
+        ));
+    }
+    alert.setInformativeText(&NSString::from_str(&info));
     // 第一个按钮是默认按钮（回车）：默认是"取消"，不会一按回车就卸载了
     alert.addButtonWithTitle(&NSString::from_str(&tr!("取消", "Cancel")));
     let uninstall = alert.addButtonWithTitle(&NSString::from_str(&tr!("卸载", "Uninstall")));
@@ -121,6 +128,15 @@ pub fn run(plan: &Plan) -> Vec<String> {
         tr!("关掉登录时自动启动", "Turn off open at login"),
         crate::login_item::unregister(),
     );
+    if crate::awdl::is_installed() {
+        step(
+            tr!(
+                "移除禁用 AWDL 系统服务并恢复 awdl0",
+                "Remove the AWDL disable service and restore awdl0"
+            ),
+            crate::awdl::uninstall_if_installed(),
+        );
+    }
     step(
         tr!(
             "清除权限记录（系统设置 → 隐私与安全性）",

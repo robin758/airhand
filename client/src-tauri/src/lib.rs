@@ -15,6 +15,8 @@
 // 最先声明：其它模块都要用到 `tr!`
 #[macro_use]
 mod i18n;
+#[cfg(target_os = "macos")]
+mod awdl;
 mod clipboard;
 mod clipfiles;
 mod config;
@@ -474,6 +476,29 @@ pub(crate) fn on_menu(app: &AppHandle, id: &str) {
             app.state::<AppState>().hub.send_modify(|_| {});
         }
         #[cfg(target_os = "macos")]
+        "toggle_awdl" => {
+            let hub = app.state::<AppState>().hub.clone();
+            let enable = !hub.borrow().awdl.is_some_and(|s| s.daemon_installed);
+            if awdl::begin_toggle() {
+                hub.send_modify(|st| st.awdl = Some(awdl::state()));
+                std::thread::spawn(move || {
+                    match awdl::apply_toggle(enable) {
+                        Ok(s) => info!(state = ?s, "AWDL setting changed"),
+                        Err(awdl::ToggleError::Canceled) => {
+                            info!("AWDL toggle canceled by user");
+                        }
+                        Err(awdl::ToggleError::Failed(e)) => {
+                            warn!("can't change AWDL setting: {e}");
+                        }
+                    }
+                    hub.send_modify(|st| st.awdl = Some(awdl::state()));
+                });
+            } else {
+                // 勾选项被点击时系统会自动翻转勾选状态：正在切换时立刻按当前状态重建菜单
+                hub.send_modify(|_| {});
+            }
+        }
+        #[cfg(target_os = "macos")]
         "receive_files" => {
             let handle = app.clone();
             let _ = app.run_on_main_thread(move || clipfiles::macos::choose(&handle));
@@ -759,7 +784,10 @@ pub fn run() {
     #[cfg(windows)]
     hub.send_modify(|s| s.user_autostart = user_autostart);
     #[cfg(target_os = "macos")]
-    clipfiles::macos::init(&hub);
+    {
+        clipfiles::macos::init(&hub);
+        hub.send_modify(|st| st.awdl = Some(awdl::state()));
+    }
     let app = tauri::Builder::default()
         .manage(AppState {
             hub: hub.clone(),
@@ -1007,6 +1035,12 @@ fn watch_permissions(hub: StatusHub) {
                 );
                 last = now;
                 hub.send_modify(|_| {});
+            }
+            // 读取 AWDL 守护服务与 awdl0 接口的实时状态（仅 stat + getifaddrs，无子进程开销）
+            let awdl_now = Some(awdl::state());
+            if hub.borrow().awdl != awdl_now {
+                info!(state = ?awdl_now, "AWDL state changed");
+                hub.send_modify(|st| st.awdl = awdl_now);
             }
             // 问系统要几毫秒到几十毫秒（XPC），不占用异步运行时的线程
             let Ok(item) = tokio::task::spawn_blocking(login_item::state).await else {

@@ -39,6 +39,9 @@ pub struct AppStatus {
     /// 或者还没查到时为 `None`
     #[cfg(target_os = "macos")]
     pub(crate) login_item: Option<crate::login_item::State>,
+    /// macOS：禁用 AWDL（`awdl0`）守护服务与接口实时状态（见 [`crate::awdl`]）
+    #[cfg(target_os = "macos")]
+    pub(crate) awdl: Option<crate::awdl::State>,
 }
 
 impl Default for AppStatus {
@@ -52,6 +55,8 @@ impl Default for AppStatus {
             user_autostart: None,
             #[cfg(target_os = "macos")]
             login_item: None,
+            #[cfg(target_os = "macos")]
+            awdl: None,
         }
     }
 }
