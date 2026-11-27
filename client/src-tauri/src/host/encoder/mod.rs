@@ -110,6 +110,14 @@ pub struct EncodedFrame {
     pub ltr: Option<LtrReport>,
 }
 
+/// 异步编码完成后的回传项（用于 macOS VideoToolbox，避免逐帧 `CompleteFrames` 同步排空）。
+pub struct EncodedOutput {
+    pub tag: u64,
+    pub result: Result<Option<EncodedFrame>>,
+}
+
+pub type AsyncSink = std::sync::mpsc::Sender<EncodedOutput>;
+
 /// 下一帧的长期参考帧控制（见 `airhand_link::refs`）。只对 [`VideoEncoder::ltr_slots`] 不为 0 的编码器有意义，
 /// 编完那一帧就失效
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -143,6 +151,18 @@ pub trait VideoEncoder {
     /// 编码 GPU 上的一帧：尺寸是采集的尺寸，编码器自己在 GPU 上缩放、转换颜色
     fn encode_gpu(&mut self, _frame: &GpuFrame, _force_key: bool) -> Result<Option<EncodedFrame>> {
         bail!("this encoder only takes frames in memory")
+    }
+    /// 启用异步输出模式：提交帧后立即返回，编码完成经 `sink` 按提交顺序回传（默认不支持，返回 `false`）
+    fn enable_async(&mut self, _sink: AsyncSink) -> bool {
+        false
+    }
+    /// 异步提交内存帧（仅在 [`Self::enable_async`] 返回 `true` 后调用）
+    fn encode_async(&mut self, _bgra: &[u8], _force_key: bool, _tag: u64) -> Result<()> {
+        bail!("this encoder doesn't support async encoding")
+    }
+    /// 异步提交 GPU 帧（仅在 [`Self::enable_async`] 返回 `true` 后调用）
+    fn encode_gpu_async(&mut self, _frame: &GpuFrame, _force_key: bool, _tag: u64) -> Result<()> {
+        bail!("this encoder doesn't support async encoding")
     }
 }
 
@@ -375,6 +395,48 @@ impl Encoder {
             &self.scaled
         };
         self.inner.encode(bgra, force_key)
+    }
+
+    /// 尝试启用异步编码输出；返回 `true` 时使用 [`Self::encode_async`] 提交，结果经 `sink` 异步回传。
+    pub fn enable_async(&mut self, sink: AsyncSink) -> bool {
+        self.inner.enable_async(sink)
+    }
+
+    /// 异步提交一帧（仅在 [`Self::enable_async`] 返回 `true` 后调用）。
+    pub fn encode_async(&mut self, frame: &Frame, force_key: bool, tag: u64) -> Result<()> {
+        if self.gpu
+            && let Some(g) = &frame.gpu
+        {
+            return self.inner.encode_gpu_async(g, force_key, tag);
+        }
+        let (w, h) = (self.inner.info().width, self.inner.info().height);
+        let data = frame.pixels()?;
+        let crop_only = crop_only((frame.width, frame.height), (w, h));
+        let bgra: &[u8] = if crop_only && frame.width == w {
+            &data[..(w * h * 4) as usize]
+        } else if crop_only {
+            self.scaled.resize((w * h * 4) as usize, 0);
+            let (src_row, dst_row) = (frame.width as usize * 4, w as usize * 4);
+            for y in 0..h as usize {
+                self.scaled[y * dst_row..(y + 1) * dst_row]
+                    .copy_from_slice(&data[y * src_row..y * src_row + dst_row]);
+            }
+            &self.scaled
+        } else {
+            let src =
+                fir::images::ImageRef::new(frame.width, frame.height, data, fir::PixelType::U8x4)
+                    .map_err(|e| anyhow!("invalid source image: {e}"))?;
+            self.scaled.resize((w * h * 4) as usize, 0);
+            resize_striped(
+                &src,
+                (frame.width, frame.height),
+                &mut self.scaled,
+                (w, h),
+                &mut self.resizers,
+            )?;
+            &self.scaled
+        };
+        self.inner.encode_async(bgra, force_key, tag)
     }
 }
 

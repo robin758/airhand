@@ -13,22 +13,23 @@
 //! 编码器只需要补残差，几帧之内就接近原画（实测 VideoToolbox H.264、4 Mbps、2880×1800 缩到 1080p 的文字：
 //! 42 dB → 58 dB，补的几帧一共约 40 KB）。编码器偶尔丢掉的帧（返回空）也靠这一步补发。
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc as sync_mpsc};
 use std::time::{Duration, Instant};
 
 use airhand_link::flow::Flow;
 use airhand_link::host::{Outbox, SendError};
 use airhand_link::refs::Plan;
 use airhand_proto::media::{self, VideoHeader};
-use airhand_proto::session::{HostMsg, Notice, QualitySettings};
+use airhand_proto::session::{Codec, HostMsg, Notice, QualitySettings};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use super::capture::{self, Frame};
 use super::cursor::{Reported, SharedCursor};
-use super::encoder::{Encoder, LtrControl};
+use super::encoder::{EncodedOutput, Encoder, LtrControl};
 use super::pace::Pacer;
 
 /// 画面停下来之后，同一帧最多再编这么多次
@@ -37,6 +38,9 @@ const REFINE_FRAMES: u8 = 8;
 const REFINE_AFTER: Duration = Duration::from_millis(200);
 /// 补的这一帧不到这么大，说明已经没什么可补的了
 const REFINE_DONE_BYTES: usize = 512;
+/// 异步编码管线（macOS VideoToolbox）中同时允许留在编码器与发送队列里的最大帧数。
+/// 2 帧即可让硬件编码与提交线程重叠（消除逐帧同步排空），同时把排队延迟压在 1 帧以内。
+const ASYNC_MAX_INFLIGHT: usize = 2;
 
 pub struct Pipeline {
     ctrl: Arc<Ctrl>,
@@ -157,6 +161,27 @@ fn send_cancellable(out: &mpsc::Sender<Bytes>, stop: &AtomicBool, mut bytes: Byt
     }
 }
 
+fn send_cancellable_either(
+    out: &mpsc::Sender<Bytes>,
+    stop: &AtomicBool,
+    cancel: &AtomicBool,
+    mut bytes: Bytes,
+) -> bool {
+    loop {
+        if stop.load(Ordering::Acquire) || cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        match out.try_send(bytes) {
+            Ok(()) => return true,
+            Err(mpsc::error::TrySendError::Closed(_)) => return false,
+            Err(mpsc::error::TrySendError::Full(b)) => {
+                bytes = b;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 /// 发一条控制消息；控制通道排满了（网络跟不上）就等着，直到管线被停下
 fn send_msg_cancellable(out: &Outbox, stop: &AtomicBool, msg: &HostMsg) -> bool {
     let msg = Outbox::encode(msg);
@@ -172,8 +197,342 @@ fn send_msg_cancellable(out: &Outbox, stop: &AtomicBool, msg: &HostMsg) -> bool 
     }
 }
 
+/// 异步提交给编码器时附带的帧元数据，随 `tag` 精确匹配到回调结果。
+struct FrameMeta {
+    capture_us: u64,
+    fresh: bool,
+    force: bool,
+    plan: Plan,
+}
+
+#[derive(Default)]
+struct AsyncState {
+    inflight: usize,
+    meta: VecDeque<(u64, FrameMeta)>,
+    error: Option<String>,
+}
+
+struct AsyncShared {
+    state: Mutex<AsyncState>,
+    cv: Condvar,
+    cancel: AtomicBool,
+    key_inflight: AtomicBool,
+    refine_done: AtomicBool,
+    closed: AtomicBool,
+}
+
+struct AsyncPipe {
+    shared: Arc<AsyncShared>,
+    ctrl: Arc<Ctrl>,
+    next_tag: u64,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AsyncPipe {
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        stream: u8,
+        codec: Codec,
+        width: u16,
+        height: u16,
+        ctrl: Arc<Ctrl>,
+        video: mpsc::Sender<Bytes>,
+        out: Outbox,
+        rx: sync_mpsc::Receiver<EncodedOutput>,
+    ) -> Self {
+        let shared = Arc::new(AsyncShared {
+            state: Mutex::default(),
+            cv: Condvar::new(),
+            cancel: AtomicBool::new(false),
+            key_inflight: AtomicBool::new(false),
+            refine_done: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        });
+        let s = shared.clone();
+        let c = ctrl.clone();
+        let thread = std::thread::Builder::new()
+            .name(format!("airhand-sender-{stream}"))
+            .spawn(move || {
+                capture::raise_priority();
+                run_sender(stream, codec, width, height, c, video, out, s, rx);
+            })
+            .expect("spawn video sender");
+        Self {
+            shared,
+            ctrl,
+            next_tag: 1,
+            thread: Some(thread),
+        }
+    }
+
+    fn wait_slot(&self) -> Option<String> {
+        let mut st = self.shared.state.lock().unwrap();
+        loop {
+            if let Some(err) = st.error.take() {
+                return Some(err);
+            }
+            if self.ctrl.stop.load(Ordering::Acquire) || self.shared.closed.load(Ordering::Acquire)
+            {
+                return None;
+            }
+            if st.inflight < ASYNC_MAX_INFLIGHT {
+                return None;
+            }
+            let (next, _) = self
+                .shared
+                .cv
+                .wait_timeout(st, Duration::from_millis(50))
+                .unwrap();
+            st = next;
+        }
+    }
+
+    fn take_error(&self) -> Option<String> {
+        self.shared.state.lock().unwrap().error.take()
+    }
+
+    fn take_refine_done(&self) -> bool {
+        self.shared.refine_done.swap(false, Ordering::AcqRel)
+    }
+
+    fn clear_refine_done(&self) {
+        self.shared.refine_done.store(false, Ordering::Release);
+    }
+
+    fn key_inflight(&self) -> bool {
+        self.shared.key_inflight.load(Ordering::Acquire)
+    }
+
+    fn closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Acquire)
+    }
+
+    fn register(&mut self, meta: FrameMeta) -> u64 {
+        let tag = self.next_tag;
+        self.next_tag = self.next_tag.wrapping_add(1).max(1);
+        if meta.force {
+            self.shared.key_inflight.store(true, Ordering::Release);
+        }
+        let mut st = self.shared.state.lock().unwrap();
+        st.inflight += 1;
+        st.meta.push_back((tag, meta));
+        tag
+    }
+
+    fn rollback(&self, tag: u64) {
+        let mut st = self.shared.state.lock().unwrap();
+        if let Some(pos) = st.meta.iter().position(|(t, _)| *t == tag) {
+            let (_, meta) = st.meta.remove(pos).unwrap();
+            if meta.force {
+                self.shared.key_inflight.store(false, Ordering::Release);
+            }
+            st.inflight = st.inflight.saturating_sub(1);
+            self.shared.cv.notify_all();
+        }
+    }
+
+    fn cancel(&self) {
+        self.shared.cancel.store(true, Ordering::Release);
+        self.shared.cv.notify_all();
+        self.ctrl.flow.wake();
+    }
+
+    fn join(&mut self) {
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sender(
+    stream: u8,
+    codec: Codec,
+    width: u16,
+    height: u16,
+    ctrl: Arc<Ctrl>,
+    video: mpsc::Sender<Bytes>,
+    out: Outbox,
+    shared: Arc<AsyncShared>,
+    rx: sync_mpsc::Receiver<EncodedOutput>,
+) {
+    while let Ok(item) = rx.recv() {
+        let meta = {
+            let mut st = shared.state.lock().unwrap();
+            st.meta
+                .iter()
+                .position(|(t, _)| *t == item.tag)
+                .map(|pos| st.meta.remove(pos).unwrap().1)
+        };
+        let Some(meta) = meta else {
+            continue;
+        };
+        let finish = |force: bool| {
+            if force {
+                shared.key_inflight.store(false, Ordering::Release);
+            }
+            let mut st = shared.state.lock().unwrap();
+            st.inflight = st.inflight.saturating_sub(1);
+            shared.cv.notify_all();
+        };
+        if ctrl.stop.load(Ordering::Acquire) || shared.cancel.load(Ordering::Acquire) {
+            finish(meta.force);
+            break;
+        }
+        match item.result {
+            Ok(Some(ef)) => {
+                let size = media::HEADER_LEN + ef.data.len();
+                if size > media::MAX_VIDEO_PACKET {
+                    send_msg_cancellable(
+                        &out,
+                        &ctrl.stop,
+                        &HostMsg::Notice(Some(Notice::CaptureFailed {
+                            detail: "encoded frame exceeds the video budget".into(),
+                        })),
+                    );
+                    shared.closed.store(true, Ordering::Release);
+                    finish(meta.force);
+                    break;
+                }
+                while !ctrl
+                    .flow
+                    .wait_room(size, &ctrl.stop, Duration::from_millis(50))
+                {
+                    if ctrl.stop.load(Ordering::Acquire) || shared.cancel.load(Ordering::Acquire) {
+                        finish(meta.force);
+                        return;
+                    }
+                }
+                if ctrl.stop.load(Ordering::Acquire) || shared.cancel.load(Ordering::Acquire) {
+                    finish(meta.force);
+                    break;
+                }
+                let (seq, reference) = ctrl.flow.sent_frame(size, ef.key, meta.plan, ef.ltr);
+                if ef.key {
+                    ctrl.last_key.store(seq, Ordering::Release);
+                }
+                let len = ef.data.len();
+                if !meta.fresh && !meta.force && len < REFINE_DONE_BYTES {
+                    shared.refine_done.store(true, Ordering::Release);
+                }
+                let header = VideoHeader {
+                    seq,
+                    stream,
+                    key: ef.key,
+                    codec,
+                    width,
+                    height,
+                    capture_us: meta.capture_us,
+                    reference,
+                };
+                let packet = Bytes::from(media::frame(&header.encode(), &[&ef.data]));
+                if !send_cancellable_either(&video, &ctrl.stop, &shared.cancel, packet) {
+                    ctrl.flow.discard(seq);
+                    if !shared.cancel.load(Ordering::Acquire) {
+                        shared.closed.store(true, Ordering::Release);
+                    }
+                    finish(meta.force);
+                    break;
+                }
+            }
+            Ok(None) => {
+                if meta.force {
+                    ctrl.force_key.store(true, Ordering::Release);
+                }
+            }
+            Err(err) => {
+                let mut st = shared.state.lock().unwrap();
+                st.error = Some(format!("{err:#}"));
+                if meta.force {
+                    shared.key_inflight.store(false, Ordering::Release);
+                }
+                st.inflight = st.inflight.saturating_sub(1);
+                shared.cv.notify_all();
+                break;
+            }
+        }
+        finish(meta.force);
+    }
+}
+
+/// 当前编码器及其可选的异步发送线程；关闭顺序固定为：通知取消 → 释放编码器（invalidate + 关发送端）→ join 发送线程，
+/// 保证旧编码器的输出绝不会与新编码器的关键帧交错。
+struct ActiveEncoder {
+    enc: Option<Encoder>,
+    async_pipe: Option<AsyncPipe>,
+}
+
+impl ActiveEncoder {
+    fn enc(&self) -> &Encoder {
+        self.enc.as_ref().expect("active encoder")
+    }
+
+    fn enc_mut(&mut self) -> &mut Encoder {
+        self.enc.as_mut().expect("active encoder")
+    }
+
+    fn is_async(&self) -> bool {
+        self.async_pipe.is_some()
+    }
+
+    fn wait_async_slot(&self) -> Option<String> {
+        self.async_pipe.as_ref().and_then(AsyncPipe::wait_slot)
+    }
+
+    fn take_async_error(&self) -> Option<String> {
+        self.async_pipe.as_ref().and_then(AsyncPipe::take_error)
+    }
+
+    fn take_refine_done(&self) -> bool {
+        self.async_pipe
+            .as_ref()
+            .is_some_and(AsyncPipe::take_refine_done)
+    }
+
+    fn clear_refine_done(&self) {
+        if let Some(p) = &self.async_pipe {
+            p.clear_refine_done();
+        }
+    }
+
+    fn key_inflight(&self) -> bool {
+        self.async_pipe
+            .as_ref()
+            .is_some_and(AsyncPipe::key_inflight)
+    }
+
+    fn async_closed(&self) -> bool {
+        self.async_pipe.as_ref().is_some_and(AsyncPipe::closed)
+    }
+
+    fn register_async(&mut self, meta: FrameMeta) -> u64 {
+        self.async_pipe
+            .as_mut()
+            .expect("async pipe")
+            .register(meta)
+    }
+
+    fn rollback_async(&self, tag: u64) {
+        if let Some(p) = &self.async_pipe {
+            p.rollback(tag);
+        }
+    }
+}
+
+impl Drop for ActiveEncoder {
+    fn drop(&mut self) {
+        if let Some(p) = &self.async_pipe {
+            p.cancel();
+        }
+        self.enc = None;
+        if let Some(mut p) = self.async_pipe.take() {
+            p.join();
+        }
+    }
+}
+
 /// 关掉编码器。卡住了的硬件编码器关掉时可能要等一会儿（这期间这一路画面停着）：太久的记一笔
-fn drop_encoder(enc: &mut Option<Encoder>) {
+fn drop_encoder(enc: &mut Option<ActiveEncoder>) {
     let started = Instant::now();
     *enc = None;
     let took = started.elapsed();
@@ -192,7 +551,7 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
     // 控制端的游戏模式要光标画进画面：读带光标的那一路（见 capture 的"带光标的画面"）
     let mut draw = settings.draw_cursor;
     let mut sub = capture::subscribe(screen, settings.fps, settings.max_short, draw);
-    let mut enc: Option<Encoder> = None;
+    let mut enc: Option<ActiveEncoder> = None;
     // 硬件编码器连续失败时改用软件编码；GPU 零拷贝连续失败时硬件编码器改用内存里的画面
     let mut hw_failures = 0u32;
     let mut gpu_failures = 0u32;
@@ -243,12 +602,12 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
             pacer.set_fps(settings.fps);
             ctrl.flow
                 .set_target(settings.bitrate_kbps, settings.adaptive);
-            if let Some(e) = &mut enc {
-                e.set_bitrate(ctrl.flow.bitrate_kbps());
+            if let Some(a) = &mut enc {
+                a.enc_mut().set_bitrate(ctrl.flow.bitrate_kbps());
                 // 需要重建编码器（例如换了编码格式）：用上一帧马上重建，画面静止时也立即生效，
                 // 控制端也能马上收到新的 HostMsg::Encoder（界面上显示的是实际在用的格式）
                 if let Some(f) = &last_frame
-                    && !e.compatible(f, &settings)
+                    && !a.enc().compatible(f, &settings)
                 {
                     ctrl.force_key.store(true, Ordering::Release);
                 }
@@ -303,6 +662,35 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
             }
         }
 
+        let async_status = enc.as_ref().map(|a| {
+            (
+                a.async_closed(),
+                a.take_refine_done(),
+                a.take_async_error(),
+                a.enc().uses_gpu(),
+                a.enc().info().hardware,
+            )
+        });
+        if let Some((closed, refine_done, err, gpu, hw)) = async_status {
+            if closed {
+                break;
+            }
+            if refine_done {
+                refine_left = 0;
+            }
+            if let Some(err) = err {
+                warn!(gpu, "encoding failed, recreating the encoder: {err}");
+                if gpu {
+                    gpu_failures += 1;
+                } else if hw {
+                    hw_failures += 1;
+                }
+                drop_encoder(&mut enc);
+                ctrl.force_key.store(true, Ordering::Release);
+                continue;
+            }
+        }
+
         let force = ctrl.force_key.load(Ordering::Acquire);
         if fs <= frame_seq {
             if let Some(err) = slot.error()
@@ -317,7 +705,8 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
             }
             // 画面静止但控制端需要关键帧（例如解码器重置）、等不到帧了要恢复，或者该补画质了：重新编码上一帧
             let refine = refine_left > 0 && Instant::now() >= refine_due;
-            let recover = ctrl.flow.recovering();
+            let recover = ctrl.flow.recovering()
+                && !enc.as_ref().is_some_and(ActiveEncoder::key_inflight);
             if !((force || refine || recover) && last_frame.is_some()) {
                 continue;
             }
@@ -342,6 +731,27 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
                 return;
             }
         }
+        // 异步编码在途满时先等空位（期间新画面会覆盖旧画面，下面仍取最新一帧）
+        let wait_err = enc.as_ref().and_then(|a| {
+            a.wait_async_slot()
+                .map(|err| (err, a.enc().uses_gpu(), a.enc().info().hardware))
+        });
+        if let Some((err, gpu, hw)) = wait_err {
+            warn!(gpu, "encoding failed, recreating the encoder: {err}");
+            if gpu {
+                gpu_failures += 1;
+            } else if hw {
+                hw_failures += 1;
+            }
+            drop_encoder(&mut enc);
+            ctrl.force_key.store(true, Ordering::Release);
+            continue;
+        }
+        if ctrl.stop.load(Ordering::Acquire)
+            || enc.as_ref().is_some_and(ActiveEncoder::async_closed)
+        {
+            break;
+        }
         // 取等待期间到达的最新一帧；没有的话重新编码上一帧（关键帧、补画质）
         let (frame, fresh) = match slot.try_newer(frame_seq, draw) {
             Some((s, f)) => {
@@ -359,7 +769,7 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
         let mut force = ctrl.force_key.swap(false, Ordering::AcqRel);
         if !enc
             .as_ref()
-            .is_some_and(|e| e.compatible(&frame, &settings))
+            .is_some_and(|a| a.enc().compatible(&frame, &settings))
         {
             drop_encoder(&mut enc);
             match Encoder::new(
@@ -369,13 +779,31 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
                 hw_failures < 3,
                 gpu_failures < 2,
             ) {
-                Ok(e) => {
+                Ok(mut e) => {
                     let mut info = e.info().clone();
                     info.stream = stream;
-                    if !send(&HostMsg::Encoder(info)) {
+                    if !send(&HostMsg::Encoder(info.clone())) {
                         break;
                     }
-                    enc = Some(e);
+                    let (tx, rx) = sync_mpsc::channel();
+                    let async_pipe = if e.enable_async(tx) {
+                        Some(AsyncPipe::start(
+                            stream,
+                            info.codec,
+                            info.width as u16,
+                            info.height as u16,
+                            ctrl.clone(),
+                            video.clone(),
+                            out.clone(),
+                            rx,
+                        ))
+                    } else {
+                        None
+                    };
+                    enc = Some(ActiveEncoder {
+                        enc: Some(e),
+                        async_pipe,
+                    });
                     force = true;
                 }
                 Err(e) => {
@@ -386,12 +814,13 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
                 }
             }
         }
-        let e = enc.as_mut().unwrap();
+        let active = enc.as_mut().unwrap();
         // 不自适应时就是画质设置里的码率；编码器自己会跳过没变的
-        e.set_bitrate(ctrl.flow.bitrate_kbps());
+        active.enc_mut().set_bitrate(ctrl.flow.bitrate_kbps());
         // 参考帧：控制端等不到帧时从它有的长期参考帧恢复（做不到就编关键帧），平时隔一阵标一个长期参考帧
-        let plan = ctrl.flow.plan(e.ltr_slots());
-        force |= plan.key;
+        let plan = ctrl.flow.plan(active.enc().ltr_slots());
+        let plan_key = plan.key && !active.key_inflight();
+        force |= plan_key;
         let plan = if force {
             Plan {
                 key: true,
@@ -399,7 +828,7 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
             }
         } else {
             if plan.mark.is_some() || plan.recover.is_some() {
-                e.set_ltr(LtrControl {
+                active.enc_mut().set_ltr(LtrControl {
                     mark: plan.mark,
                     recover: plan.recover,
                 });
@@ -411,73 +840,95 @@ fn run(ctrl: Arc<Ctrl>, stream: u8, screen: u8, video: mpsc::Sender<Bytes>, out:
         if fresh || force {
             refine_left = REFINE_FRAMES;
             refine_due = started + REFINE_AFTER;
+            active.clear_refine_done();
         } else {
             refine_left = refine_left.saturating_sub(1);
         }
-        match e.encode(&frame, force) {
-            Ok(Some(ef)) => {
-                if ctrl.stop.load(Ordering::Acquire) {
-                    break;
-                }
-                let size = media::HEADER_LEN + ef.data.len();
-                if size > media::MAX_VIDEO_PACKET {
-                    notice(Notice::CaptureFailed {
-                        detail: "encoded frame exceeds the video budget".into(),
-                    });
-                    break;
-                }
-                while !ctrl
-                    .flow
-                    .wait_room(size, &ctrl.stop, Duration::from_millis(50))
-                {
-                    if ctrl.stop.load(Ordering::Acquire) {
-                        return;
-                    }
-                }
-                let (seq, reference) = ctrl.flow.sent_frame(size, ef.key, plan, ef.ltr);
-                if ef.key {
-                    ctrl.last_key.store(seq, Ordering::Release);
-                }
-                let info = e.info();
-                let len = ef.data.len();
-                if !fresh && !force && len < REFINE_DONE_BYTES {
-                    refine_left = 0;
-                }
-                let header = VideoHeader {
-                    seq,
-                    stream,
-                    key: ef.key,
-                    codec: info.codec,
-                    width: info.width as u16,
-                    height: info.height as u16,
-                    // 重新编码的上一帧就是现在的画面（画面一直没变），采集时间记为现在：
-                    // 控制端按采集时间做音画同步，用旧的时间会以为这一帧严重滞后，让声音跟着多等
-                    capture_us: super::clock::us(if fresh { frame.captured } else { started }),
-                    reference,
-                };
-                let packet = Bytes::from(media::frame(&header.encode(), &[&ef.data]));
-                if !send_cancellable(&video, &ctrl.stop, packet) {
-                    ctrl.flow.discard(seq);
-                    break;
-                }
-            }
-            Ok(None) => {
-                if force {
-                    ctrl.force_key.store(true, Ordering::Release);
-                }
-            }
-            Err(err) => {
-                warn!(
-                    gpu = e.uses_gpu(),
-                    "encoding failed, recreating the encoder: {err:#}"
-                );
-                if e.uses_gpu() {
+        // 重新编码的上一帧就是现在的画面（画面一直没变），采集时间记为现在：
+        // 控制端按采集时间做音画同步，用旧的时间会以为这一帧严重滞后，让声音跟着多等
+        let capture_us = super::clock::us(if fresh { frame.captured } else { started });
+        if active.is_async() {
+            let tag = active.register_async(FrameMeta {
+                capture_us,
+                fresh,
+                force,
+                plan,
+            });
+            if let Err(err) = active.enc_mut().encode_async(&frame, force, tag) {
+                active.rollback_async(tag);
+                let (gpu, hw) = (active.enc().uses_gpu(), active.enc().info().hardware);
+                warn!(gpu, "encoding failed, recreating the encoder: {err:#}");
+                if gpu {
                     gpu_failures += 1;
-                } else if e.info().hardware {
+                } else if hw {
                     hw_failures += 1;
                 }
                 drop_encoder(&mut enc);
                 ctrl.force_key.store(true, Ordering::Release);
+            }
+        } else {
+            let e = active.enc_mut();
+            match e.encode(&frame, force) {
+                Ok(Some(ef)) => {
+                    if ctrl.stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let size = media::HEADER_LEN + ef.data.len();
+                    if size > media::MAX_VIDEO_PACKET {
+                        notice(Notice::CaptureFailed {
+                            detail: "encoded frame exceeds the video budget".into(),
+                        });
+                        break;
+                    }
+                    while !ctrl
+                        .flow
+                        .wait_room(size, &ctrl.stop, Duration::from_millis(50))
+                    {
+                        if ctrl.stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                    }
+                    let (seq, reference) = ctrl.flow.sent_frame(size, ef.key, plan, ef.ltr);
+                    if ef.key {
+                        ctrl.last_key.store(seq, Ordering::Release);
+                    }
+                    let info = e.info();
+                    let len = ef.data.len();
+                    if !fresh && !force && len < REFINE_DONE_BYTES {
+                        refine_left = 0;
+                    }
+                    let header = VideoHeader {
+                        seq,
+                        stream,
+                        key: ef.key,
+                        codec: info.codec,
+                        width: info.width as u16,
+                        height: info.height as u16,
+                        capture_us,
+                        reference,
+                    };
+                    let packet = Bytes::from(media::frame(&header.encode(), &[&ef.data]));
+                    if !send_cancellable(&video, &ctrl.stop, packet) {
+                        ctrl.flow.discard(seq);
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    if force {
+                        ctrl.force_key.store(true, Ordering::Release);
+                    }
+                }
+                Err(err) => {
+                    let (gpu, hw) = (e.uses_gpu(), e.info().hardware);
+                    warn!(gpu, "encoding failed, recreating the encoder: {err:#}");
+                    if gpu {
+                        gpu_failures += 1;
+                    } else if hw {
+                        hw_failures += 1;
+                    }
+                    drop_encoder(&mut enc);
+                    ctrl.force_key.store(true, Ordering::Release);
+                }
             }
         }
         last_frame = Some(frame);

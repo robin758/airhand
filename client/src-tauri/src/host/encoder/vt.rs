@@ -1,9 +1,11 @@
 //! macOS VideoToolbox 硬件编码（Apple 芯片的媒体引擎 / Intel 核显），支持 H.264 和 HEVC。
 //!
-//! * 实时模式、低延迟码率控制（H.264）、无 B 帧、超长 GOP（只在需要时插入关键帧）；
+//! * 实时模式、无 B 帧、超长 GOP（只在需要时插入关键帧）；不启用 `EnableLowLatencyRateControl`
+//!   （该模式在高分辨率高熵动态画面下会主动丢弃近一半帧，码率平滑由 `DataRateLimits` 与 `Flow` 负责）；
 //! * 画面的两种来路：ScreenCaptureKit 已经缩放好的 NV12（GPU 零拷贝，`CVPixelBuffer` 原样交给编码器，见
 //!   `capture/sck.rs`）；内存里的 BGRA 直接转换进编码器自己缓冲池里的 NV12 缓冲（IOSurface），没有多余拷贝；
-//! * 编码器是异步的：提交一帧后等它完成（`CompleteFrames`），变成"一进一出"的同步调用；
+//! * 管线模式启用异步回调（[`VideoEncoder::enable_async`]），提交后立即返回、不再每帧同步 `CompleteFrames`
+//!   排空硬件管线；同步接口（[`VideoEncoder::encode`]）仍保留给单元测试与未启用异步的调用方；
 //! * 输出是 AVCC / HVCC（长度前缀），转换成控制端使用的 Annex-B，关键帧前面带上参数集。
 
 use std::ffi::c_void;
@@ -38,12 +40,11 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_RealTime, kVTCompressionPropertyKey_TransferFunction,
     kVTCompressionPropertyKey_YCbCrMatrix, kVTEncodeFrameOptionKey_ForceKeyFrame,
     kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
-    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 use yuvutils_rs::{YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix};
 
-use super::{EncodedFrame, VideoEncoder, annexb_nal_types};
+use super::{AsyncSink, EncodedFrame, EncodedOutput, VideoEncoder, annexb_nal_types};
 use crate::host::capture::GpuFrame;
 
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
@@ -58,16 +59,13 @@ fn codec_type(c: Codec) -> CMVideoCodecType {
 }
 
 /// 只要硬件编码器
-fn hardware_spec(low_latency: bool) -> CFRetained<CFDictionary> {
+fn hardware_spec() -> CFRetained<CFDictionary> {
     let yes: &CFType = CFBoolean::new(true);
-    let mut keys: Vec<&CFString> =
-        vec![unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder }];
-    if low_latency {
-        keys.push(unsafe { kVTVideoEncoderSpecification_EnableLowLatencyRateControl });
-    }
-    let values = vec![yes; keys.len()];
+    let key: &CFString =
+        unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder };
     opaque(CFDictionary::<CFString, CFType>::from_slices(
-        &keys, &values,
+        &[key],
+        &[yes],
     ))
 }
 
@@ -82,7 +80,7 @@ pub fn has_hardware(codec: Codec) -> bool {
     if codec == Codec::AV1 {
         return false;
     }
-    let spec = hardware_spec(false);
+    let spec = hardware_spec();
     let mut id: *const CFString = std::ptr::null();
     let mut props: *const CFDictionary = std::ptr::null();
     let status = unsafe {
@@ -105,31 +103,46 @@ pub fn has_hardware(codec: Codec) -> bool {
 
 type Output = Option<Result<Option<EncodedFrame>, String>>;
 
-/// 编码完成的回调（在 VideoToolbox 的线程上调用）。`refcon` 指向编码器里的 `Mutex<Output>`。
+struct CallbackState {
+    codec: Codec,
+    sync_out: Mutex<Output>,
+    async_sink: Mutex<Option<AsyncSink>>,
+}
+
+/// 编码完成的回调（在 VideoToolbox 的线程上调用）。`refcon` 指向编码器里的 [`CallbackState`]。
 unsafe extern "C-unwind" fn on_output(
     refcon: *mut c_void,
-    _frame: *mut c_void,
+    frame: *mut c_void,
     status: i32,
     _flags: VTEncodeInfoFlags,
     sample: *mut CMSampleBuffer,
 ) {
-    let slot = unsafe { &*(refcon as *const (Mutex<Output>, Codec)) };
+    let state = unsafe { &*(refcon as *const CallbackState) };
     let r = if status != 0 {
         Err(format!("encoding failed: OSStatus {status}"))
     } else {
         match unsafe { sample.as_ref() } {
             // 编码器丢弃了这一帧
             None => Ok(None),
-            Some(sb) => to_annexb(sb, slot.1).map(Some),
+            Some(sb) => to_annexb(sb, state.codec).map(Some),
         }
     };
-    *slot.0.lock().unwrap() = Some(r);
+    // 先释放锁再无阻塞发送，避免在 VideoToolbox 回调队列上持锁或阻塞（防止 invalidate 死锁）
+    let sink = state.async_sink.lock().unwrap().clone();
+    if let Some(tx) = sink {
+        let _ = tx.send(EncodedOutput {
+            tag: frame as usize as u64,
+            result: r.map_err(|e| anyhow!(e)),
+        });
+    } else {
+        *state.sync_out.lock().unwrap() = Some(r);
+    }
 }
 
 pub struct VtEncoder {
     session: CFRetained<VTCompressionSession>,
     /// 回调写入结果的地方（地址必须固定：交给了 VideoToolbox）
-    out: Box<(Mutex<Output>, Codec)>,
+    out: Box<CallbackState>,
     info: EncoderInfo,
     kbps: u32,
     epoch: Instant,
@@ -153,7 +166,11 @@ impl VtEncoder {
         if codec == Codec::AV1 {
             bail!("VideoToolbox can't encode AV1");
         }
-        let out = Box::new((Mutex::new(None), codec));
+        let out = Box::new(CallbackState {
+            codec,
+            sync_out: Mutex::new(None),
+            async_sink: Mutex::new(None),
+        });
         let source = {
             let nv12 = CFNumber::new_i32(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange as i32);
             let (width, height) = (CFNumber::new_i32(w as i32), CFNumber::new_i32(h as i32));
@@ -168,42 +185,26 @@ impl VtEncoder {
                 &[&nv12, &width, &height, &iosurface],
             ))
         };
-        // 低延迟码率控制（为视频会议设计：没有缓冲、码率更平稳）。不支持的格式退回普通的实时模式
-        let mut session = None;
-        let mut low_latency = codec == Codec::H264;
-        for attempt in [low_latency, false] {
-            let spec = hardware_spec(attempt);
-            let mut ptr: *mut VTCompressionSession = std::ptr::null_mut();
-            let status = unsafe {
-                VTCompressionSession::create(
-                    None,
-                    w as i32,
-                    h as i32,
-                    codec_type(codec),
-                    Some(&spec),
-                    Some(&source),
-                    None,
-                    Some(on_output),
-                    (&raw const *out).cast_mut().cast(),
-                    NonNull::from(&mut ptr),
-                )
-            };
-            if let (0, Some(p)) = (status, NonNull::new(ptr)) {
-                session = Some(unsafe { CFRetained::from_raw(p) });
-                low_latency = attempt;
-                break;
-            }
-            tracing::debug!(
-                ?codec,
-                low_latency = attempt,
-                status,
-                "VTCompressionSessionCreate failed"
-            );
-            if !attempt {
-                bail!("can't create the VideoToolbox {codec:?} encoder (OSStatus {status})");
-            }
-        }
-        let session = session.ok_or_else(|| anyhow!("no VideoToolbox session"))?;
+        let spec = hardware_spec();
+        let mut ptr: *mut VTCompressionSession = std::ptr::null_mut();
+        let status = unsafe {
+            VTCompressionSession::create(
+                None,
+                w as i32,
+                h as i32,
+                codec_type(codec),
+                Some(&spec),
+                Some(&source),
+                None,
+                Some(on_output),
+                (&raw const *out).cast_mut().cast(),
+                NonNull::from(&mut ptr),
+            )
+        };
+        let session = match (status, NonNull::new(ptr)) {
+            (0, Some(p)) => unsafe { CFRetained::from_raw(p) },
+            _ => bail!("can't create the VideoToolbox {codec:?} encoder (OSStatus {status})"),
+        };
 
         let mut me = Self {
             session,
@@ -272,7 +273,7 @@ impl VtEncoder {
         if status != 0 {
             bail!("VideoToolbox can't prepare the encoder (OSStatus {status})");
         }
-        tracing::debug!(?codec, low_latency, "VideoToolbox session created");
+        tracing::debug!(?codec, "VideoToolbox session created");
         Ok(me)
     }
 
@@ -409,11 +410,29 @@ impl VideoEncoder for VtEncoder {
         }
         self.submit(frame.pixel_buffer(), force_key)
     }
+
+    fn enable_async(&mut self, sink: AsyncSink) -> bool {
+        *self.out.async_sink.lock().unwrap() = Some(sink);
+        true
+    }
+
+    fn encode_async(&mut self, bgra: &[u8], force_key: bool, tag: u64) -> Result<()> {
+        let pb = self.pixel_buffer(bgra)?;
+        self.submit_async(&pb, force_key, tag)
+    }
+
+    fn encode_gpu_async(&mut self, frame: &GpuFrame, force_key: bool, tag: u64) -> Result<()> {
+        let (w, h) = (self.info.width, self.info.height);
+        if frame.size() != (w, h) {
+            bail!("the frame is {:?}, the encoder {w}x{h}", frame.size());
+        }
+        self.submit_async(frame.pixel_buffer(), force_key, tag)
+    }
 }
 
 impl VtEncoder {
-    /// 交给编码器一帧，等它编完
-    fn submit(&mut self, pb: &CVPixelBuffer, force_key: bool) -> Result<Option<EncodedFrame>> {
+    /// 向 VideoToolbox 提交一帧（不等待完成，结果由 `on_output` 回调异步送出）
+    fn submit_async(&mut self, pb: &CVPixelBuffer, force_key: bool, tag: u64) -> Result<()> {
         // 时间戳用真实时间：码率控制据此分配每帧的比特数（画面静止一段时间后的那一帧可以多用一些）
         let pts = (self.epoch.elapsed().as_micros() as i64).max(self.last_pts + 1);
         self.last_pts = pts;
@@ -424,26 +443,32 @@ impl VtEncoder {
                 &[yes],
             ))
         });
-        *self.out.0.lock().unwrap() = None;
         let status = unsafe {
             self.session.encode_frame(
                 pb,
                 CMTime::new(pts, 1_000_000),
                 kCMTimeInvalid,
                 props.as_deref(),
-                std::ptr::null_mut(),
+                tag as usize as *mut c_void,
                 std::ptr::null_mut(),
             )
         };
         if status != 0 {
             bail!("VTCompressionSessionEncodeFrame: OSStatus {status}");
         }
+        Ok(())
+    }
+
+    /// 交给编码器一帧，等它编完（同步模式）
+    fn submit(&mut self, pb: &CVPixelBuffer, force_key: bool) -> Result<Option<EncodedFrame>> {
+        *self.out.sync_out.lock().unwrap() = None;
+        self.submit_async(pb, force_key, 0)?;
         // 等这一帧编码完（回调在返回之前一定会被调用）
         let status = unsafe { self.session.complete_frames(kCMTimeInvalid) };
         if status != 0 {
             bail!("VTCompressionSessionCompleteFrames: OSStatus {status}");
         }
-        match self.out.0.lock().unwrap().take() {
+        match self.out.sync_out.lock().unwrap().take() {
             Some(Ok(f)) => Ok(f),
             Some(Err(e)) => Err(anyhow!(e)),
             None => Ok(None),
@@ -673,6 +698,44 @@ mod tests {
             );
             enc.set_bitrate(1000);
             assert!(enc.encode(&frame, false).unwrap().is_some());
+        }
+    }
+
+    /// 异步模式：不逐帧排空，回调按 tag 顺序交付 Annex-B 帧，关键帧生效，Drop 不死锁
+    #[test]
+    fn encodes_async_annexb() {
+        for codec in [Codec::H264, Codec::H265] {
+            if !has_hardware(codec) {
+                continue;
+            }
+            let (w, h) = (1280u32, 720u32);
+            let mut enc = VtEncoder::new(codec, w, h, 60, 4000, None).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            assert!(enc.enable_async(tx));
+            let mut frame = vec![0u8; (w * h * 4) as usize];
+            for i in 0..8u64 {
+                for (p, px) in frame.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    let on = ((p as u32 % w) / 32 + (p as u32 / w) / 32 + i as u32) % 2 == 0;
+                    *px = if on {
+                        [180, 90, 40, 255]
+                    } else {
+                        [30, 50, 200, 255]
+                    };
+                }
+                enc.encode_async(&frame, i == 0 || i == 5, i + 1).unwrap();
+            }
+            let mut got = Vec::new();
+            for _ in 0..8 {
+                let item = rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("异步编码超时");
+                let ef = item.result.unwrap().expect("编码器丢了帧");
+                assert!(ef.data.starts_with(&START_CODE), "不是 Annex-B");
+                got.push((item.tag, ef.key));
+            }
+            assert_eq!(got.iter().map(|&(t, _)| t).collect::<Vec<_>>(), (1..=8).collect::<Vec<_>>());
+            assert!(got[0].1 && got[5].1, "关键帧未生效: {got:?}");
+            drop(enc);
         }
     }
 }

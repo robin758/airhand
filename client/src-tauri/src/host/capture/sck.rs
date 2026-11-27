@@ -48,9 +48,9 @@ const LAYOUT_CHECK: Duration = Duration::from_secs(2);
 const STATE_CHECK: Duration = Duration::from_millis(500);
 /// 读取光标形状的间隔
 const CURSOR_POLL: Duration = Duration::from_millis(50);
-/// 编码线程会拿着几帧（上一帧要留着补画质、重发关键帧，几个会话各拿各的），
-/// 拿着的画面系统不能复用：多留几个空位（最多 8）
-const QUEUE_DEPTH: isize = 7;
+/// 编码线程会拿着几帧（上一帧要留着补画质、重发关键帧，异步编码还会在途 1–2 帧，几个会话各拿各的），
+/// 拿着的画面系统不能复用：留足空位（系统上限 8）
+const QUEUE_DEPTH: isize = 8;
 
 /// GPU 上的一帧：系统缩放好的 NV12（BT.709 有限范围，IOSurface），尺寸就是编码尺寸，原样交给 VideoToolbox。
 ///
@@ -145,8 +145,12 @@ pub struct SckCapturer {
     vd_mode: u64,
 }
 
+/// 给 ScreenCaptureKit 留出帧间隔抖动余量（5/8 周期，例如 60 fps → 1/96 s ≈ 10.4 ms、30 fps → 1/48 s）：
+/// 60 Hz 屏上设精确 1/60 时，全屏视频合成轻微提前 0.1 ms 就会被系统整帧丢弃、掉到 ~40 fps；
+/// 放宽到 5/8 周期既能在 120 Hz 屏或 30 fps 档省掉多余采帧，又把精确节流交给自带 1/4 周期容错的 `Pacer`。
 fn frame_interval(fps: u8) -> CMTime {
-    unsafe { CMTime::new(1, fps.max(1) as i32) }
+    let rate = ((fps.max(1) as i32) * 8 / 5).max(1);
+    unsafe { CMTime::new(1, rate) }
 }
 
 impl SckCapturer {
@@ -433,6 +437,18 @@ fn unpremultiply(rgba: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_interval_leaves_jitter_headroom() {
+        let t60 = frame_interval(60);
+        assert_eq!((t60.value, t60.timescale), (1, 96));
+        let t30 = frame_interval(30);
+        assert_eq!((t30.value, t30.timescale), (1, 48));
+        let t2 = frame_interval(2);
+        assert_eq!((t2.value, t2.timescale), (1, 3));
+        let t0 = frame_interval(0);
+        assert_eq!((t0.value, t0.timescale), (1, 1));
+    }
 
     #[test]
     fn unpremultiplies() {
