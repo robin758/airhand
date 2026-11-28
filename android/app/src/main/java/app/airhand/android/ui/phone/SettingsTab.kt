@@ -85,7 +85,9 @@ import app.airhand.android.ui.ChoiceDialog
 import app.airhand.android.ui.ConfirmDialog
 import app.airhand.android.ui.EditTextDialog
 import app.airhand.android.ui.Messages
+import app.airhand.android.ui.QualityEditor
 import app.airhand.android.ui.SectionTitle
+import app.airhand.android.ui.qualitySettingsSummary
 import app.airhand.android.ui.theme.Brand
 import app.airhand.android.ui.theme.Mono
 import kotlinx.coroutines.Dispatchers
@@ -140,7 +142,7 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
             CategoryRow(
                 Icons.Outlined.HighQuality,
                 stringResource(R.string.cat_video),
-                "${presetName(Preset.of(s.preset))} · ${stringResource(R.string.auto_rotate)} ${if (s.autoRotate) onText else offText}",
+                "${qualitySettingsSummary(s)} · ${stringResource(R.string.auto_rotate)} ${if (s.autoRotate) onText else offText}",
             ) { category = SettingsCategory.VIDEO }
             CategoryRow(
                 Icons.AutoMirrored.Outlined.VolumeUp,
@@ -196,13 +198,27 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
 
             when (current) {
                 SettingsCategory.VIDEO -> {
-                    Item(Icons.Outlined.HighQuality, stringResource(R.string.default_quality), presetName(Preset.of(s.preset))) { dialog = "preset" }
                     Toggle(Icons.Outlined.Speed, stringResource(R.string.show_stats), stringResource(R.string.show_stats_desc), s.showStats) { v ->
                         app.updateSettings { it.copy(showStats = v) }
                     }
                     Toggle(Icons.Outlined.StayCurrentLandscape, stringResource(R.string.auto_rotate), stringResource(R.string.auto_rotate_desc), s.autoRotate) { v ->
                         app.updateSettings { it.copy(autoRotate = v) }
                     }
+                    SectionTitle(stringResource(R.string.default_quality))
+                    QualityEditor(
+                        settings = s,
+                        liveDirect = null,
+                        liveProfile = null,
+                        debounceMs = 0L,
+                        onUpdateGlobal = { profile -> app.updateSettings { it.withGlobalQuality(profile) } },
+                        onToggleSplitPath = { enabled -> app.updateSettings { it.copy(splitPathQuality = enabled) } },
+                        onUpdatePathProfile = { direct, profile ->
+                            val clean = profile.sanitized()
+                            app.updateSettings { cur ->
+                                if (direct) cur.copy(directQuality = clean) else cur.copy(relayQuality = clean)
+                            }
+                        },
+                    )
                 }
                 SettingsCategory.AUDIO -> {
                     Toggle(Icons.AutoMirrored.Outlined.VolumeUp, stringResource(R.string.play_audio), stringResource(R.string.play_audio_desc), s.audio) { v ->
@@ -384,22 +400,6 @@ fun SettingsTab(modifier: Modifier, snackbar: SnackbarHostState) {
             onConfirm = {
                 dialog = null
                 app.forgetPaired()
-            },
-        )
-        "preset" -> ChoiceDialog(
-            title = stringResource(R.string.default_quality),
-            options = Preset.entries,
-            selected = Preset.of(s.preset),
-            label = { p ->
-                Column {
-                    Text(presetName(p))
-                    Text(presetDesc(p), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            },
-            onDismiss = { dialog = null },
-            onSelect = { p ->
-                dialog = null
-                app.updateSettings { it.copy(preset = p.id) }
             },
         )
         "mode" -> ChoiceDialog(

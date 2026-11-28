@@ -15,10 +15,10 @@ import app.airhand.android.core.HostHello
 import app.airhand.android.core.Native
 import app.airhand.android.core.Notice
 import app.airhand.android.core.OsKind
-import app.airhand.android.core.Preset
 import app.airhand.android.core.PrivacyState
 import app.airhand.android.core.Problem
 import app.airhand.android.core.Quality
+import app.airhand.android.core.QualityProfile
 import app.airhand.android.core.ServerState
 import app.airhand.android.core.Stats
 import app.airhand.android.core.SystemAction
@@ -133,7 +133,7 @@ class RemoteSession(
     @Volatile
     private var privacyWanted = false
     val quality = MutableStateFlow(
-        Preset.of(app.settings.value.preset).quality(
+        app.settings.value.startupQuality().toQuality(
             VideoDecoder.decodable.firstOrNull { it in Codec.PRIORITY } ?: Codec.H264,
         ),
     )
@@ -197,6 +197,11 @@ class RemoteSession(
     /** 最近一次 [setZoom] 要的（等手指停下来才生效），只在主线程上用 */
     private var zoomWanted: Pair<Float, Float>? = null
     private var zoomJob: Job? = null
+
+    /** 直连 / 中继自动切档状态（只在主线程上读写） */
+    private var observedPathDirect: Boolean? = null
+    private var appliedPathDirect: Boolean? = if (app.settings.value.splitPathQuality) false else null
+    private var pathSwitchJob: Job? = null
 
     /** 最近发给对方的画质设置 */
     @Volatile
@@ -273,6 +278,7 @@ class RemoteSession(
                     resetPrivacy()
                     decoder.resetStream()
                     stats.value = null
+                    resetPathAutoSwitch()
                     stopAudio()
                     if (closed) break
                     if (!end.second) {
@@ -492,16 +498,20 @@ class RemoteSession(
                 frameLimit = null
                 refreshSettings()
             }
-            "stats" -> stats.value = Stats(
-                fps = e.optDouble("fps").toFloat(),
-                kbps = e.optDouble("kbps").toFloat(),
-                rttMs = if (e.isNull("rttMs")) null else e.optDouble("rttMs").toFloat(),
-                width = e.optInt("width"),
-                height = e.optInt("height"),
-                direct = e.optBoolean("direct"),
-                jitterMs = e.optDouble("jitterMs", 0.0).toFloat(),
-                lossPct = e.optDouble("lossPct", 0.0).toFloat(),
-            )
+            "stats" -> {
+                val st = Stats(
+                    fps = e.optDouble("fps").toFloat(),
+                    kbps = e.optDouble("kbps").toFloat(),
+                    rttMs = if (e.isNull("rttMs")) null else e.optDouble("rttMs").toFloat(),
+                    width = e.optInt("width"),
+                    height = e.optInt("height"),
+                    direct = e.optBoolean("direct"),
+                    jitterMs = e.optDouble("jitterMs", 0.0).toFloat(),
+                    lossPct = e.optDouble("lossPct", 0.0).toFloat(),
+                )
+                stats.value = st
+                if (st.width > 0) onPathObserved(st.direct)
+            }
             "notice" -> {
                 val o = e.optJSONObject("notice") ?: return
                 val n = Notice(o.optString("kind"), o.optStringOrNull("detail"), o.optBoolean("screen"), o.optBoolean("input"))
@@ -635,6 +645,103 @@ class RemoteSession(
     fun setQuality(q: Quality) {
         quality.value = q
         sendSettings()
+    }
+
+    /**
+     * 用户在会话内修改画质：立即发送，取消挂起的自动切档，并持久化到对应配置
+     * （未开启分档时保存到全局，开启分档时保存到当前直连/中继档位）。
+     */
+    fun applyUserQuality(profile: QualityProfile, persist: Boolean = true) {
+        val clean = profile.sanitized()
+        val next = clean.toQuality(quality.value.codec)
+        val curDirect = stats.value?.takeIf { it.width > 0 }?.direct
+        pathSwitchJob?.cancel()
+        pathSwitchJob = null
+        appliedPathDirect = curDirect ?: if (app.settings.value.splitPathQuality) false else null
+        if (quality.value != next) {
+            quality.value = next
+            sendSettings()
+        }
+        if (persist) {
+            app.updateSettings { s ->
+                if (!s.splitPathQuality) s.withGlobalQuality(clean)
+                else if (curDirect == true) s.copy(directQuality = clean)
+                else s.copy(relayQuality = clean)
+            }
+        }
+    }
+
+    /** 开关“按直连 / 中继分别记忆画质”：按当前链路立即对齐画质 */
+    fun applySplitPathQuality(enabled: Boolean) {
+        app.updateSettings { it.copy(splitPathQuality = enabled) }
+        pathSwitchJob?.cancel()
+        pathSwitchJob = null
+        val curDirect = stats.value?.takeIf { it.width > 0 }?.direct
+        observedPathDirect = curDirect
+        val target = if (enabled) {
+            val d = curDirect ?: false
+            appliedPathDirect = d
+            app.settings.value.qualityFor(d)
+        } else {
+            appliedPathDirect = null
+            app.settings.value.effectiveQuality()
+        }
+        val next = target.toQuality(quality.value.codec)
+        if (quality.value != next) {
+            quality.value = next
+            sendSettings()
+        }
+    }
+
+    /** 编辑直连或中继的独立画质档；若当前会话正处于该链路则立即生效 */
+    fun updatePathQuality(direct: Boolean, profile: QualityProfile) {
+        val clean = profile.sanitized()
+        app.updateSettings { s ->
+            if (direct) s.copy(directQuality = clean) else s.copy(relayQuality = clean)
+        }
+        val s = app.settings.value
+        if (!s.splitPathQuality) return
+        val liveDirect = stats.value?.takeIf { it.width > 0 }?.direct
+        if (liveDirect == direct || (liveDirect == null && !direct)) {
+            pathSwitchJob?.cancel()
+            pathSwitchJob = null
+            appliedPathDirect = direct
+            val next = clean.toQuality(quality.value.codec)
+            if (quality.value != next) {
+                quality.value = next
+                sendSettings()
+            }
+        }
+    }
+
+    private fun onPathObserved(direct: Boolean) {
+        if (!app.settings.value.splitPathQuality) return
+        scope.launch {
+            if (observedPathDirect == direct) return@launch
+            observedPathDirect = direct
+            pathSwitchJob?.cancel()
+            pathSwitchJob = scope.launch {
+                delay(PATH_SETTLE_MS)
+                val s = app.settings.value
+                if (!s.splitPathQuality || observedPathDirect != direct || appliedPathDirect == direct) return@launch
+                appliedPathDirect = direct
+                val target = s.qualityFor(direct)
+                val cur = quality.value
+                if (cur.toProfile() != target) {
+                    Log.i(TAG, "link settled (${if (direct) "direct" else "relayed"}), switching quality to $target")
+                    quality.value = target.toQuality(cur.codec)
+                    refreshSettings()
+                }
+            }
+        }
+    }
+
+    private fun resetPathAutoSwitch() {
+        scope.launch {
+            pathSwitchJob?.cancel()
+            pathSwitchJob = null
+            observedPathDirect = null
+        }
     }
 
     /**
@@ -796,6 +903,9 @@ class RemoteSession(
 
         /** 放大的手势停下来这么久才按新的大小要分辨率 */
         private const val ZOOM_SETTLE_MS = 400L
+
+        /** 直连 / 中继状态连续稳定这么久后再自动切档，避免链路抖动频繁重建编码器 */
+        private const val PATH_SETTLE_MS = 2_500L
 
         /** 光标形状：头后面的 RGBA（非预乘）→ Bitmap */
         fun cursorBitmap(b: ByteArray, w: Int, h: Int): Bitmap? {

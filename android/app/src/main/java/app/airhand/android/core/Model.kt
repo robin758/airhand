@@ -2,6 +2,10 @@ package app.airhand.android.core
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
+import kotlin.math.exp
+import kotlin.math.ln
+import kotlin.math.roundToInt
 
 /** 视频编码格式，与 Rust 的 `airhand_proto::session::Codec` 对应（JSON 里是 `wire`，媒体包头里是 `id`） */
 enum class Codec(val id: Int, val wire: String, val mime: String, val label: String) {
@@ -28,12 +32,103 @@ data class Quality(
     val adaptive: Boolean = true,
     val codec: Codec = Codec.H264,
 ) {
+    fun toProfile(): QualityProfile = QualityProfile(fps, kbps, maxShort, adaptive)
+
     fun toJson(): JSONObject = JSONObject()
         .put("fps", fps)
         .put("bitrateKbps", kbps)
         .put("maxShort", maxShort)
         .put("adaptive", adaptive)
         .put("codec", codec.wire)
+}
+
+/**
+ * 可持久化的画质参数（不含由两端动态协商的 codec）。
+ * 范围与桌面端 QualityPanel / Rust QualitySettings 对齐。
+ */
+data class QualityProfile(
+    val fps: Int,
+    val kbps: Int,
+    val maxShort: Int,
+    val adaptive: Boolean = true,
+) {
+    fun toQuality(codec: Codec): Quality = Quality(fps, kbps, maxShort, adaptive, codec)
+
+    fun sanitized(): QualityProfile = QualityProfile(
+        fps = fps.coerceIn(MIN_FPS, MAX_FPS),
+        kbps = kbps.coerceIn(MIN_KBPS, MAX_KBPS),
+        maxShort = if (maxShort == 0) 0 else maxShort.coerceIn(MIN_MAX_SHORT, MAX_MAX_SHORT),
+        adaptive = adaptive,
+    )
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("fps", fps)
+        .put("kbps", kbps)
+        .put("maxShort", maxShort)
+        .put("adaptive", adaptive)
+
+    companion object {
+        const val MIN_FPS = 15
+        const val MAX_FPS = 120
+        const val MIN_KBPS = 500
+        const val MAX_KBPS = 100_000
+        const val MIN_MAX_SHORT = 360
+        const val MAX_MAX_SHORT = 4320
+
+        val FPS_OPTIONS = listOf(15, 24, 30, 60, 90, 120)
+        val MAX_SHORT_OPTIONS = listOf(720, 1080, 1440, 2160, 0)
+
+        /** 开启直连/中继分档时的默认初值：直连偏向高清 60fps，中继偏向低负载稳态 60fps */
+        val DEFAULT_DIRECT = QualityProfile(fps = 60, kbps = 16_000, maxShort = 1440, adaptive = true)
+        val DEFAULT_RELAY = QualityProfile(fps = 60, kbps = 5_000, maxShort = 1080, adaptive = true)
+
+        private val LOG_MIN = ln(MIN_KBPS.toDouble())
+        private val LOG_MAX = ln(MAX_KBPS.toDouble())
+
+        fun parse(o: JSONObject?, fallback: QualityProfile): QualityProfile {
+            if (o == null) return fallback
+            val fps = if (o.has("fps")) o.optInt("fps", -1).takeIf { it in MIN_FPS..MAX_FPS } ?: fallback.fps else fallback.fps
+            val kbps = if (o.has("kbps")) o.optInt("kbps", -1).takeIf { it in MIN_KBPS..MAX_KBPS } ?: fallback.kbps else fallback.kbps
+            val maxShort = if (o.has("maxShort")) {
+                o.optInt("maxShort", -1).takeIf { it == 0 || it in MIN_MAX_SHORT..MAX_MAX_SHORT } ?: fallback.maxShort
+            } else {
+                fallback.maxShort
+            }
+            val adaptive = o.optBoolean("adaptive", fallback.adaptive)
+            return QualityProfile(fps, kbps, maxShort, adaptive)
+        }
+
+        /** 对数映射：kbps -> 滑块位置 [0, 1]，低码率区间操作更细腻 */
+        fun kbpsToSlider(kbps: Int): Float {
+            val clamped = kbps.coerceIn(MIN_KBPS, MAX_KBPS).toDouble()
+            return ((ln(clamped) - LOG_MIN) / (LOG_MAX - LOG_MIN)).toFloat().coerceIn(0f, 1f)
+        }
+
+        /** 滑块位置 [0, 1] -> 按段取整的 kbps */
+        fun sliderToKbps(pos: Float): Int {
+            val t = pos.coerceIn(0f, 1f).toDouble()
+            val raw = exp(LOG_MIN + t * (LOG_MAX - LOG_MIN))
+            val step = when {
+                raw < 2_000.0 -> 100
+                raw < 10_000.0 -> 500
+                raw < 30_000.0 -> 1_000
+                else -> 2_000
+            }
+            return ((raw / step).roundToInt() * step).coerceIn(MIN_KBPS, MAX_KBPS)
+        }
+
+        fun formatBitrate(kbps: Int): String = when {
+            kbps < 1_000 -> "$kbps kbps"
+            kbps < 10_000 -> if (kbps % 1_000 == 0) "${kbps / 1_000} Mbps" else String.format(Locale.US, "%.1f Mbps", kbps / 1_000f)
+            else -> "${(kbps + 500) / 1_000} Mbps"
+        }
+
+        fun formatResolution(maxShort: Int, nativeLabel: String): String = when (maxShort) {
+            0 -> nativeLabel
+            2160 -> "4K"
+            else -> "${maxShort}p"
+        }
+    }
 }
 
 /** 画质预设：与桌面控制台（client/src/lib/presets.ts）相同 */
@@ -44,6 +139,9 @@ enum class Preset(val id: String, val fps: Int, val kbps: Int, val maxShort: Int
     HD("hd", 60, 16000, 1440),
     NATIVE("native", 60, 30000, 0);
 
+    fun profile(adaptive: Boolean = true) =
+        QualityProfile(fps, kbps, maxShort, adaptive)
+
     fun quality(codec: Codec) =
         Quality(fps, kbps, maxShort, true, codec)
 
@@ -51,6 +149,7 @@ enum class Preset(val id: String, val fps: Int, val kbps: Int, val maxShort: Int
         val DEFAULT = BALANCED
         fun of(id: String?) = entries.firstOrNull { it.id == id } ?: DEFAULT
         fun match(q: Quality) = entries.firstOrNull { it.fps == q.fps && it.kbps == q.kbps && it.maxShort == q.maxShort }
+        fun match(p: QualityProfile) = entries.firstOrNull { it.fps == p.fps && it.kbps == p.kbps && it.maxShort == p.maxShort }
     }
 }
 

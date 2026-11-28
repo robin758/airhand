@@ -119,8 +119,8 @@ import app.airhand.android.core.Codec
 import app.airhand.android.core.DecoderStats
 import app.airhand.android.core.EncoderInfo
 import app.airhand.android.core.OsKind
-import app.airhand.android.core.Preset
 import app.airhand.android.core.PrivacyState
+import app.airhand.android.core.QualityAdvisor
 import app.airhand.android.core.Stats
 import app.airhand.android.core.SystemAction
 import app.airhand.android.data.Settings
@@ -128,9 +128,9 @@ import app.airhand.android.data.TouchMode
 import app.airhand.android.data.WheelMode
 import app.airhand.android.ui.ConfirmDialog
 import app.airhand.android.ui.Messages
+import app.airhand.android.ui.QualityEditor
+import app.airhand.android.ui.SmartQualityCard
 import app.airhand.android.ui.OsAvatar
-import app.airhand.android.ui.phone.presetDesc
-import app.airhand.android.ui.phone.presetName
 import app.airhand.android.ui.theme.Brand
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -941,27 +941,47 @@ private fun Displays(session: RemoteSession, onDone: () -> Unit) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun Quality(session: RemoteSession) {
+private fun Quality(session: RemoteSession, settings: Settings) {
+    val ctx = LocalContext.current
     val q by session.quality.collectAsState()
     val hello by session.hello.collectAsState()
     val encoder by session.encoder.collectAsState()
-    val current = Preset.match(q)
-    Preset.entries.forEach { p ->
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable { session.setQuality(p.quality(q.codec)) }
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RadioButton(selected = p == current, onClick = null)
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(presetName(p), style = MaterialTheme.typography.bodyLarge)
-                Text(presetDesc(p), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
+    val stats by session.stats.collectAsState()
+    val decoderStats by session.decoderStats.collectAsState()
+    val displays by session.displays.collectAsState()
+    val currentDisplay by session.currentDisplay.collectAsState()
+
+    val liveDirect = stats?.takeIf { it.width > 0 }?.direct
+    val metrics = ctx.resources.displayMetrics
+    val screenShortPx = minOf(metrics.widthPixels, metrics.heightPixels)
+    val hostShortPx = displays.firstOrNull { it.index == currentDisplay }?.let { minOf(it.width, it.height) } ?: 0
+    val recommendation = remember(stats, decoderStats, screenShortPx, hostShortPx) {
+        QualityAdvisor.recommendSmooth60(
+            QualityAdvisor.Context(
+                stats = stats,
+                decoder = decoderStats,
+                screenShortPx = screenShortPx,
+                hostShortPx = hostShortPx,
+            ),
+        )
     }
+
+    SmartQualityCard(
+        recommendation = recommendation,
+        current = q.toProfile(),
+        onApply = { session.applyUserQuality(it, persist = true) },
+    )
+
+    QualityEditor(
+        settings = settings,
+        liveDirect = liveDirect,
+        liveProfile = q.toProfile(),
+        debounceMs = 250L,
+        onUpdateGlobal = { session.applyUserQuality(it, persist = true) },
+        onToggleSplitPath = { session.applySplitPathQuality(it) },
+        onUpdatePathProfile = { direct, profile -> session.updatePathQuality(direct, profile) },
+    )
+
     HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
     Text(stringResource(R.string.codec), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp))
     val hostCodecs = hello?.codecs ?: listOf(Codec.H264)
@@ -1023,7 +1043,7 @@ private fun VideoCategoryPage(
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
     )
-    Quality(session)
+    Quality(session, settings)
 
     if (displays.size > 1) {
         HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 16.dp))

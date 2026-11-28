@@ -323,9 +323,13 @@ private fun TvMenu(
         if (displays.size > 1) {
             TvMenuItem(Icons.Outlined.Monitor, stringResource(R.string.menu_displays), stringResource(R.string.display_n, current + 1)) { onDisplay() }
         }
-        val preset = Preset.match(q) ?: Preset.DEFAULT
-        TvMenuItem(Icons.Outlined.HighQuality, stringResource(R.string.menu_quality), presetName(preset)) {
-            val next = Preset.entries[(Preset.entries.indexOf(preset) + 1) % Preset.entries.size]
+        val preset = Preset.match(q)
+        TvMenuItem(
+            Icons.Outlined.HighQuality,
+            stringResource(R.string.menu_quality),
+            preset?.let { presetName(it) } ?: stringResource(R.string.quality_custom),
+        ) {
+            val next = if (preset == null) Preset.DEFAULT else Preset.entries[(Preset.entries.indexOf(preset) + 1) % Preset.entries.size]
             session.setQuality(next.quality(q.codec))
         }
         // 编码格式：自动 → 双方都支持的各种格式，按一下换一个；选择会记下来

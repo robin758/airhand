@@ -6,6 +6,8 @@ import android.provider.Settings as SystemSettings
 import android.util.AtomicFile
 import android.util.Log
 import app.airhand.android.BuildConfig
+import app.airhand.android.core.Preset
+import app.airhand.android.core.QualityProfile
 import app.airhand.android.core.optStringOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -78,6 +80,14 @@ data class Settings(
     val deviceName: String = "",
     /** 默认画质预设 */
     val preset: String = "balanced",
+    /** 自定义全局画质（非 null 时覆盖 preset；null 表示沿用 preset 默认参数） */
+    val customQuality: QualityProfile? = null,
+    /** 按直连 / 中继分别记忆并自动切换画质（默认关闭，不改变老用户行为） */
+    val splitPathQuality: Boolean = false,
+    /** 分档模式下的直连画质 */
+    val directQuality: QualityProfile = QualityProfile.DEFAULT_DIRECT,
+    /** 分档模式下的中继画质 */
+    val relayQuality: QualityProfile = QualityProfile.DEFAULT_RELAY,
     val touchMode: TouchMode = TouchMode.AUTO,
     /** 连接后播放对方的声音 */
     val audio: Boolean = true,
@@ -120,6 +130,29 @@ data class Settings(
      */
     val identity: String = "",
 ) {
+    /** 全局生效画质（未自定义时按旧 preset 兜底） */
+    fun effectiveQuality(): QualityProfile = customQuality ?: Preset.of(preset).profile()
+
+    /** 指定链路下的目标画质：未开启分档时统一走全局设置 */
+    fun qualityFor(direct: Boolean): QualityProfile =
+        if (!splitPathQuality) effectiveQuality()
+        else if (direct) directQuality else relayQuality
+
+    /** 会话握手起步画质：开启分档时先按中继档起步，避免建立初期突发高码率卡顿 */
+    fun startupQuality(): QualityProfile =
+        if (splitPathQuality) relayQuality else effectiveQuality()
+
+    /** 更新全局画质；命中预设且开启自适应时同步写回 preset 并清空 customQuality，保持旧版兼容 */
+    fun withGlobalQuality(profile: QualityProfile): Settings {
+        val clean = profile.sanitized()
+        val matched = Preset.match(clean)
+        return if (matched != null && clean.adaptive) {
+            copy(preset = matched.id, customQuality = null)
+        } else {
+            copy(preset = matched?.id ?: preset, customQuality = clean)
+        }
+    }
+
     /** 为现在的服务器记下的指纹（换了服务器就不算） */
     val learnedFp: String? get() = trustedFp.takeIf { it.isNotBlank() && trustedServer.trim() == server.trim() }
 
@@ -134,6 +167,10 @@ data class Settings(
         .put("trustedFp", trustedFp)
         .put("deviceName", deviceName)
         .put("preset", preset)
+        .apply { customQuality?.let { put("customQuality", it.toJson()) } }
+        .put("splitPathQuality", splitPathQuality)
+        .put("directQuality", directQuality.toJson())
+        .put("relayQuality", relayQuality.toJson())
         .put("touchMode", touchMode.id)
         .put("audio", audio)
         .put("avSync", avSync)
@@ -165,13 +202,20 @@ data class Settings(
         fun parse(o: JSONObject): Settings {
             val d = Settings()
             val tips = o.optJSONArray("tipsSeen")
+            val preset = o.optString("preset", d.preset)
+            val presetFallback = Preset.of(preset).profile()
+            val customQuality = o.optJSONObject("customQuality")?.let { QualityProfile.parse(it, presetFallback) }
             return Settings(
                 server = o.optString("server", d.server).ifBlank { d.server },
                 fingerprint = o.optString("fingerprint", d.fingerprint),
                 trustedServer = o.optString("trustedServer", ""),
                 trustedFp = o.optString("trustedFp", ""),
                 deviceName = o.optString("deviceName", ""),
-                preset = o.optString("preset", d.preset),
+                preset = preset,
+                customQuality = customQuality,
+                splitPathQuality = o.optBoolean("splitPathQuality", d.splitPathQuality),
+                directQuality = QualityProfile.parse(o.optJSONObject("directQuality"), d.directQuality),
+                relayQuality = QualityProfile.parse(o.optJSONObject("relayQuality"), d.relayQuality),
                 touchMode = TouchMode.of(o.optStringOrNull("touchMode")),
                 audio = o.optBoolean("audio", d.audio),
                 avSync = o.optBoolean("avSync", d.avSync),
